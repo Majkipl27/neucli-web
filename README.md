@@ -28,7 +28,7 @@ Neucli Web provides the frontend interface for managing block-based configuratio
 git clone <repository-url>
 
 # Install dependencies
-pnpm install
+pnpm i
 ```
 
 ### Development
