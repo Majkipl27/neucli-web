@@ -41,7 +41,7 @@ pnpm dev
 
 ### Building for Production
 
-Create an optimized manufacturing build:
+Create an optimized production build:
 
 ```bash
 pnpm build
@@ -49,10 +49,18 @@ pnpm build
 
 ## Project Structure
 
-- `src/editor/`: Core editing components (Canvas, Toolbars, Sidebars).
-- `src/editor/PreviewCanvas.tsx`: High-fidelity preview of the current configuration.
-- `src/editor/YamlDrawer.tsx`: Direct YAML manipulation and export.
-- `src/editor/types.ts`: Centralized type definitions for nodes and configurations.
+An architectural rewrite is in progress. See `NOTES.md` for the current plan,
+known UX issues, and the block-registry contract.
+
+The target layout is:
+
+- `src/document/`: document types, zod schema, pure tree operations, commands, YAML I/O.
+- `src/store/`: zustand stores (document with undo/redo, selection, UI).
+- `src/blocks/`: one `*.block.tsx` file per block type; auto-registered.
+- `src/shell/`: editor chrome (Toolbar, LeftSidebar, Canvas, RightPanel, YamlDrawer).
+- `src/tailwind/`: shared className-token primitives.
+
+Until Phase 3 lands, legacy files in `src/editor/` still render the editor.
 
 ## License
 
