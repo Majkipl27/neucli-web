@@ -64,4 +64,4 @@ Until Phase 3 lands, legacy files in `src/editor/` still render the editor.
 
 ## License
 
-Open sourced under the GNU GPL License.
+MIT. See `LICENSE`.
