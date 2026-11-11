@@ -34,15 +34,24 @@ export function Section({
   const [open, setOpen] = useState(initialOpen);
   return (
     <div className="border-b border-white/[0.07]">
-      <div className="flex h-8 items-center gap-1 pl-3 pr-1.5">
+      <div className="flex h-8 items-center gap-1.5 pl-3 pr-1.5">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex flex-1 items-center gap-1.5 text-left text-[11px] font-semibold text-white/80"
+          className="text-left text-[11px] font-semibold text-white/80"
         >
           {title}
-          {marker}
-          {!open && <span className="text-[9px] font-normal text-white/25">hidden</span>}
+        </button>
+        {/* The marker can be a button itself (click to reset), so it sits beside the title, not inside it. */}
+        {marker}
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-hidden="true"
+          onClick={() => setOpen((v) => !v)}
+          className="flex h-full flex-1 items-center text-left text-[9px] font-normal text-white/25"
+        >
+          {!open && 'hidden'}
         </button>
         {actions}
       </div>
@@ -51,7 +60,7 @@ export function Section({
   );
 }
 
-export type MarkTone = 'breakpoint' | 'instance';
+export type MarkTone = 'breakpoint' | 'instance' | 'state';
 
 /** Small dot next to a label: the value is overridden here. Click resets it. */
 export function Mark({ tone, title, onReset }: { tone: MarkTone; title: string; onReset?: () => void }) {
@@ -63,7 +72,7 @@ export function Mark({ tone, title, onReset }: { tone: MarkTone; title: string; 
         e.stopPropagation();
         onReset?.();
       }}
-      className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone === 'instance' ? 'bg-violet-400' : 'bg-sky-400'} ${onReset ? 'hover:ring-2 hover:ring-white/30' : ''}`}
+      className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone === 'instance' ? 'bg-violet-400' : tone === 'state' ? 'bg-amber-400' : 'bg-sky-400'} ${onReset ? 'hover:ring-2 hover:ring-white/30' : ''}`}
     />
   );
 }

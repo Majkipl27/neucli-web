@@ -120,6 +120,15 @@ export function useKeyboardShortcuts(): void {
       const mod = e.ctrlKey || e.metaKey;
       const typing = isTypingTarget(e.target);
 
+      // Preview: the page is being tried, not edited. Esc (outside the page) goes back to editing.
+      if (useUIStore.getState().preview) {
+        if (e.key === 'Escape' && !typing) {
+          e.preventDefault();
+          useUIStore.getState().setPreview(false);
+        }
+        return;
+      }
+
       if (mod && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
         if (e.shiftKey) useDocumentStore.getState().redo();

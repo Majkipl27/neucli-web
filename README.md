@@ -51,10 +51,10 @@ pnpm build
 
 The editor reads and writes the same YAML format as the CLI. The format, its validation and every class decision come from the CLI repo as `neucli/core`, linked from `../neucli`, so clone both repos side by side. The plan lives in `../neucli/ROADMAP.md`.
 
-- `src/document/`: types, tree operations (paths reach into named slots), commands, YAML import/export, insert palette, bundled examples, breakpoint-aware style reads/writes (`style.ts`), detach (`detach.ts`), theme token references (`tokens.ts`), component authoring (`components.ts`: create from selection, rename, props, text binding, presets, layouts) and `scope.ts`, which lets the canvas edit a page or a main component through the same paths.
+- `src/document/`: types, tree operations (paths reach into named slots), commands, YAML import/export, insert palette, bundled examples, breakpoint-aware style reads/writes (`style.ts`), detach (`detach.ts`), theme token references (`tokens.ts`), component authoring (`components.ts`: create from selection, rename, props, text binding, presets, layouts), interactions (`interactions.ts`: state in scope, state styles) and `scope.ts`, which lets the canvas edit a page or a main component through the same paths.
 - `src/store/`: zustand stores (document with undo/redo, selection, UI) and `useValidated`, the document as core validates it.
-- `src/canvas/`: the page rendered in an iframe with Tailwind v4 compiled in the browser, and the selection/hover overlay.
-- `src/panel/`: the auto layout panel (`StylePanel`) and its controls: scrubbable number fields, segmented buttons, the color picker.
+- `src/canvas/`: the page rendered in an iframe with Tailwind v4 compiled in the browser, and the selection/hover overlay. Preview runs the page's interactions with neucli/core's action and condition helpers.
+- `src/panel/`: the auto layout panel (`StylePanel`), the Interactions section (state, previewed values, actions, visibleWhen, state styles) and their controls: scrubbable number fields, segmented buttons, the color picker.
 - `src/shell/`: editor chrome (Toolbar, LeftSidebar, LayerTree, Canvas, RightPanel, YamlDrawer), the component panel and the Create component dialog.
 
 ## License

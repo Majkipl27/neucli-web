@@ -10,7 +10,7 @@
  */
 
 import React from 'react';
-import { isInstance, isLinkContainer } from 'neucli/core';
+import { isInstance, isLinkContainer, mergeStyle, OVERRIDABLE } from 'neucli/core';
 import type { Breakpoint, Config, Gradient, InstanceNode, Layout, Node, Style } from 'neucli/core';
 import { useDocumentStore, type DispatchOptions } from '../store/useDocument';
 import { useUIStore, VIEWPORTS } from '../store/useUI';
@@ -23,6 +23,7 @@ import {
 import { elementFor, rectOf } from '../canvas/interaction';
 import { canvasDocument } from '../canvas/registry';
 import { withRoots } from '../document/scope';
+import { setWhenStyle, setWhenStyleSub, whenOf } from '../document/interactions';
 import {
   ColorField, IconButton, Mark, NumberField, Row, Section, Seg, Select, Toggle, type ChangeKind,
 } from './controls';
@@ -41,6 +42,8 @@ interface Editor {
   node: Node;
   config: Config;
   bp: Breakpoint;
+  /** Editing the styles under `when[cond]` instead of the base style. */
+  when: string | null;
   /** Effective style shown in the panel. */
   style: Style;
   instance: boolean;
@@ -56,6 +59,7 @@ function useEditor(node: Node, selection: Selection): Editor {
   const config = useDocumentStore((s) => s.config);
   const dispatch = useDocumentStore((s) => s.dispatch);
   const bp = useUIStore((s) => s.breakpoint);
+  const stateStyle = useUIStore((s) => s.stateStyle);
   const instance = isInstance(node);
   const key = pathKey(selection.path);
 
@@ -65,12 +69,16 @@ function useEditor(node: Node, selection: Selection): Editor {
       options,
     );
 
+  const when = !instance && stateStyle?.node === `${selection.pageIndex}|${key}` && stateStyle.when in whenOf(node) ? stateStyle.when : null;
+  if (when) return whenEditor(node, config, bp, when, selection, update);
+
   const style = instance ? instanceStyleAt(config, node as InstanceNode, bp) : styleAt(node, bp);
 
   return {
     node,
     config,
     bp,
+    when: null,
     style,
     instance,
     set: (k, value, kind = 'commit', gesture) =>
@@ -87,6 +95,64 @@ function useEditor(node: Node, selection: Selection): Editor {
         return <Mark tone="breakpoint" title={`Overridden on ${VIEWPORTS[bp].label.toLowerCase()}`} onReset={() => update((n) => resetOverride(n, bp, k, sub))} />;
       }
       return null;
+    },
+  };
+}
+
+/**
+ * Editing `when[cond]`: shows the style at this breakpoint with the state
+ * style on top, and writes into the state style (which applies at every
+ * breakpoint). Values the state style sets get an amber dot that removes them.
+ */
+function whenEditor(
+  node: Node, config: Config, bp: Breakpoint, cond: string, selection: Selection,
+  update: (fn: (n: Node) => Node, options?: DispatchOptions) => void,
+): Editor {
+  const own = whenOf(node)[cond] ?? {};
+  const style = mergeStyle(styleAt(node, bp), own as Style);
+  const flash = (m: string) => useUIStore.getState().flash(m);
+  // A component's root: instances own these keys, so state styles can't set them (see docs/format.md).
+  const isRoot = selection.pageIndex < 0 && selection.path.length === 1;
+  const refuse = (k: StyleKey, sub?: string): boolean => {
+    if (k === 'layout' && sub === 'direction') {
+      flash("A state style can't change the direction. Use two frames with Visible when instead.");
+      return true;
+    }
+    if (isRoot && (OVERRIDABLE as readonly string[]).includes(k)) {
+      flash(`On a component's root, state styles can't set ${k}: instances override it. Style a frame inside instead.`);
+      return true;
+    }
+    return false;
+  };
+  const tag = `${pathKey(selection.path)}:when:${cond}`;
+  return {
+    node,
+    config,
+    bp,
+    when: cond,
+    style,
+    instance: false,
+    // Unset in a state style means "same as the base", so defaults are written explicitly (as on tablet/phone).
+    set: (k, value, kind = 'commit', gesture) => {
+      if (refuse(k)) return;
+      update((n) => setWhenStyle(n, cond, k, normalize(k, value, 'phone')), optionsFor(`${tag}:${k}`, kind, gesture));
+    },
+    setSub: (k, sub, value, kind = 'commit', gesture) => {
+      if (refuse(k, sub)) return;
+      update((n) => setWhenStyleSub(n, cond, k, sub, normalize(`${k}.${sub}`, value, 'phone')), optionsFor(`${tag}:${k}.${sub}`, kind, gesture));
+    },
+    apply: (fn) => update(fn),
+    mark: (k, sub) => {
+      const v = (own as Obj)[k];
+      const set = sub === undefined ? v !== undefined : !!v && typeof v === 'object' && sub in (v as Obj);
+      if (!set) return null;
+      return (
+        <Mark
+          tone="state"
+          title={`Set while ${cond}`}
+          onReset={() => update((n) => (sub === undefined ? setWhenStyle(n, cond, k, undefined) : setWhenStyleSub(n, cond, k, sub, undefined)))}
+        />
+      );
     },
   };
 }
@@ -116,6 +182,17 @@ export default function StylePanel({ node, selection }: { node: Node; selection:
   const t = node.type;
   if (t === 'slot') return null;
 
+  const stateBanner = ed.when && (
+    <div className="flex items-center gap-2 border-b border-amber-400/20 bg-amber-400/[0.08] px-3 py-1.5 text-[10px] text-amber-100/80">
+      <span className="min-w-0 flex-1">
+        Styling while <span className="font-mono text-amber-100">{ed.when}</span>. Applies at every breakpoint.
+      </span>
+      <button type="button" className="text-amber-100/60 hover:text-white" onClick={() => useUIStore.getState().setStateStyle(null)}>
+        Done
+      </button>
+    </div>
+  );
+
   if (ed.instance) {
     return (
       <>
@@ -132,6 +209,7 @@ export default function StylePanel({ node, selection }: { node: Node; selection:
 
   return (
     <>
+      {stateBanner}
       {hasLayout && <LayoutSection ed={ed} />}
       <SizeSection ed={ed} selection={selection} />
       <FillSection ed={ed} />

@@ -26,7 +26,7 @@ function isPlainObject(v: unknown): v is Obj {
 export const NODE_KEY_ORDER = [
   'type', 'name', 'id', 'tag', 'content', 'href', 'newTab', 'src', 'alt', 'field', 'inputType', 'multiline', 'placeholder', 'required',
   'props', 'layout', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'fill', 'color', 'font', 'radius',
-  'border', 'shadow', 'opacity', 'clip', 'hidden', 'fit', 'className', 'attrs', 'state', 'on', 'visibleWhen', 'responsive', 'children', 'slots',
+  'border', 'shadow', 'opacity', 'clip', 'hidden', 'fit', 'className', 'attrs', 'state', 'on', 'visibleWhen', 'when', 'responsive', 'children', 'slots',
 ];
 const SUB_KEY_ORDER: Record<string, string[]> = {
   layout: ['direction', 'columns', 'wrap', 'gap', 'padding', 'align', 'justify'],

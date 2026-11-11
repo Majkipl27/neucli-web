@@ -16,6 +16,7 @@ import {
 } from '../document/commands';
 import ErrorBoundary from './ErrorBoundary';
 import StylePanel from '../panel/StylePanel';
+import InteractionsPanel from '../panel/InteractionsPanel';
 import { Section as PanelSection, TextField, Row } from '../panel/controls';
 import { detachInstance } from '../document/detach';
 import { useUIStore, VIEWPORTS } from '../store/useUI';
@@ -190,6 +191,8 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
         )}
 
         <StylePanel node={any} selection={selection} />
+
+        <InteractionsPanel key={`${selection.pageIndex}|${selection.path.join('.')}`} node={any} selection={selection} />
 
         {node.type !== 'slot' && <PanelSection title="Advanced" open={false}>
           <Row label="Layer"><TextField value={'name' in any ? any.name ?? '' : ''} placeholder={labelFor({ ...any, name: undefined } as Node)} onChange={optional('name')} /></Row>

@@ -13,9 +13,28 @@ import { createPortal } from 'react-dom';
 import { googleFontsUrl } from 'neucli/core';
 import type { Config, Page } from 'neucli/core';
 import { ComponentView, PageView } from './render';
+import type { StatePreview } from './render';
 import { classesIn, compilerFor, pinViewportUnits } from './tailwind';
 
-const SRC_DOC = '<!doctype html><html><head><meta charset="utf-8"><style id="nc-tw"></style></head><body><div id="root"></div></body></html>';
+const SRC_DOC =
+  '<!doctype html><html><head><meta charset="utf-8">' +
+  '<style id="nc-base">html[data-nc-instant] *, html[data-nc-instant] *::before, html[data-nc-instant] *::after { transition: none !important; }</style>' +
+  '<style id="nc-tw"></style></head><body><div id="root"></div></body></html>';
+
+/**
+ * Swap the compiled Tailwind CSS without `transition-*` classes animating from the
+ * old styles (or from unstyled, on first load). Transitions are off while the new
+ * CSS is applied, a forced style read commits it, then they're back on.
+ */
+function setCanvasCss(doc: Document, css: string) {
+  const style = doc.getElementById('nc-tw');
+  if (!style || style.textContent === css) return;
+  const root = doc.documentElement;
+  root.setAttribute('data-nc-instant', '');
+  style.textContent = css;
+  void doc.body.offsetHeight;
+  root.removeAttribute('data-nc-instant');
+}
 
 export interface CanvasFrameProps {
   config: Config;
@@ -37,7 +56,21 @@ export interface CanvasFrameProps {
   /** Wheel over the page, with coordinates in page pixels. */
   onWheel: (event: WheelEvent) => void;
   onDocument: (doc: Document | null) => void;
+  /** Preview: interactions run, and clicks go to the page instead of the editor. */
+  live?: boolean;
+  /** Edit mode: state values previewed from the panel. */
+  statePreview?: StatePreview;
+  /** Preview: an internal link was clicked (e.g. `/pricing`). */
+  onNavigate?: (href: string) => void;
+  /** The part of the page the editor shows, page px: modal dialogs center in it. */
+  view?: { top: number; height: number };
 }
+
+/**
+ * The iframe is as tall as the page, so `position: fixed` would center a
+ * modal in the middle of the whole page. Pin modals to the part on screen.
+ */
+const LIVE_CSS = `dialog:modal{position:absolute;inset-inline:0;top:calc(var(--nc-view-top,0px) + var(--nc-view-h,100vh) / 2);bottom:auto;translate:0 -50%;max-height:calc(var(--nc-view-h,100vh) - 32px)}`;
 
 export interface CanvasPointer {
   type: 'down' | 'move' | 'up' | 'dblclick' | 'leave';
@@ -63,7 +96,7 @@ function pointer(type: CanvasPointer['type'], e: MouseEvent): CanvasPointer {
 }
 
 function CanvasFrame(props: CanvasFrameProps) {
-  const { config, page, component, dropSlots, width, viewportHeight, renderKey } = props;
+  const { config, page, component, dropSlots, width, viewportHeight, renderKey, live, statePreview } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [doc, setDoc] = useState<Document | null>(null);
   const [height, setHeight] = useState(viewportHeight);
@@ -89,9 +122,57 @@ function CanvasFrame(props: CanvasFrameProps) {
     return () => cb.current.onDocument(null);
   }, [doc]);
 
+  // Preview: the page is live. Links and forms stay inside the editor; the wheel still scrolls it.
+  useEffect(() => {
+    if (!doc || !live) return;
+    const win = doc.defaultView!;
+    const onClick = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      const a = el && typeof el.closest === 'function' ? (el.closest('a[href]') as HTMLAnchorElement | null) : null;
+      if (!a) return;
+      e.preventDefault();
+      const href = a.getAttribute('href') ?? '';
+      if (href.startsWith('/') && !href.startsWith('//')) cb.current.onNavigate?.(href);
+    };
+    const onSubmit = (e: Event) => e.preventDefault();
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      cb.current.onWheel(e);
+    };
+    // Esc leaves Preview, unless the page uses it (an open dialog closes first).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || doc.querySelector('dialog[open]')) return;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    };
+    doc.addEventListener('click', onClick, true);
+    doc.addEventListener('submit', onSubmit, true);
+    win.addEventListener('wheel', onWheel, { passive: false });
+    win.addEventListener('keydown', onKey);
+    let style = doc.getElementById('nc-live') as HTMLStyleElement | null;
+    if (!style) {
+      style = doc.createElement('style');
+      style.id = 'nc-live';
+      style.textContent = LIVE_CSS;
+      doc.head.appendChild(style);
+    }
+    return () => {
+      doc.removeEventListener('click', onClick, true);
+      doc.removeEventListener('submit', onSubmit, true);
+      win.removeEventListener('wheel', onWheel);
+      win.removeEventListener('keydown', onKey);
+      doc.getElementById('nc-live')?.remove();
+    };
+  }, [doc, live]);
+
+  useEffect(() => {
+    if (!doc || !props.view) return;
+    doc.documentElement.style.setProperty('--nc-view-top', `${Math.round(props.view.top)}px`);
+    doc.documentElement.style.setProperty('--nc-view-h', `${Math.round(props.view.height)}px`);
+  }, [doc, props.view?.top, props.view?.height]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Pointer, wheel and keyboard: the page is a picture of the site, not a live site.
   useEffect(() => {
-    if (!doc) return;
+    if (!doc || live) return;
     const win = doc.defaultView!;
     const stop = (e: Event) => {
       if (!inEditable(e.target)) e.preventDefault();
@@ -151,7 +232,7 @@ function CanvasFrame(props: CanvasFrameProps) {
       win.removeEventListener('wheel', onWheel);
       win.removeEventListener('keydown', onKey);
     };
-  }, [doc]);
+  }, [doc, live]);
 
   // <html lang> and Google Fonts, as in the generated index.html.
   const fontsUrl = googleFontsUrl(config.theme);
@@ -184,16 +265,40 @@ function CanvasFrame(props: CanvasFrameProps) {
     const candidates = classesIn(doc);
     compilerFor(theme).then((build) => {
       if (cancelled) return;
-      const style = doc.getElementById('nc-tw')!;
-      const css = pinViewportUnits(build(candidates), viewportHeight);
-      if (style.textContent !== css) style.textContent = css;
+      setCanvasCss(doc, pinViewportUnits(build(candidates), viewportHeight));
       cb.current.onLayout();
     }).catch((err) => console.error('[canvas] Tailwind compile failed', err));
     cb.current.onLayout();
     return () => {
       cancelled = true;
     };
-  }, [doc, config, page, component, dropSlots, theme, viewportHeight, renderKey]);
+  }, [doc, config, page, component, dropSlots, theme, viewportHeight, renderKey, live, statePreview]);
+
+  // Preview: interactions add elements and classes after render (an opened dialog, a
+  // state style). Compile again when a class shows up that the last build didn't have.
+  useEffect(() => {
+    if (!doc || !live) return;
+    let built = new Set(classesIn(doc));
+    let frame = 0;
+    const rebuild = () => {
+      frame = 0;
+      const now = classesIn(doc);
+      if (now.every((c) => built.has(c))) return;
+      built = new Set(now);
+      compilerFor(theme).then((build) => {
+        setCanvasCss(doc, pinViewportUnits(build(now), viewportHeight));
+        cb.current.onLayout();
+      }).catch((err) => console.error('[canvas] Tailwind compile failed', err));
+    };
+    const observer = new MutationObserver(() => {
+      if (!frame) frame = requestAnimationFrame(rebuild);
+    });
+    observer.observe(doc.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [doc, live, theme, viewportHeight]);
 
   // Grow the iframe to the page height; shrink back when content shrinks.
   useEffect(() => {
@@ -224,8 +329,8 @@ function CanvasFrame(props: CanvasFrameProps) {
       />
       {doc && createPortal(
         component
-          ? <ComponentView key={`c:${component}:${renderKey}`} config={config} name={component} dropSlots={dropSlots} />
-          : page && <PageView key={renderKey} config={config} page={page} dropSlots={dropSlots} />,
+          ? <ComponentView key={`c:${component}:${renderKey}:${live ? 'live' : 'edit'}`} config={config} name={component} dropSlots={dropSlots} live={live} preview={statePreview} />
+          : page && <PageView key={`${renderKey}:${live ? 'live' : 'edit'}`} config={config} page={page} dropSlots={dropSlots} live={live} preview={statePreview} />,
         doc.getElementById('root')!,
       )}
     </>

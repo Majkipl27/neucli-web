@@ -2,19 +2,24 @@
  * Renders a page the way the generated project would, using the same
  * primitives and the same class computation (`neucli/core`) as the CLI.
  *
+ * Interactions use core's action and condition helpers too. In edit mode,
+ * state shows its initial values (or values previewed from the panel) and
+ * nothing reacts to clicks; in Preview (`live`) the handlers run.
+ *
  * Differences from generated code are editor-only:
  * - every page node gets `data-nid` (its path) so clicks map back to the document;
  * - component `logic:` doesn't run, so names it declares stay as literal
  *   `{name}` text and `{expr}` event handlers are dropped.
  */
 
-import { Fragment, type ReactNode } from 'react';
-import { Frame, Text, Image, Link, Input, cx } from 'neucli/core/primitives';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Frame, Text, Image, Link, Input, Dialog, cx, onPress } from 'neucli/core/primitives';
 import {
-  childFlows, collectSlots, componentRestClasses, isInstance, layoutOf, nodeClasses, pageParentFlows,
-  rootOverrides, slotParentFlows, sourceOf, COLUMN_FLOWS,
+  childFlows, collectSlots, componentRestVariants, isInstance, layoutOf, nodeClassVariants, pageParentFlows,
+  rootOverrides, slotParentFlows, sourceOf, COLUMN_FLOWS, pickVariant, parseAction, parseCondition, evalCondition,
+  applyAction, attrCondition, INTERACTIVE_TAGS,
 } from 'neucli/core';
-import type { Config, Flows, InstanceNode, Node, Page, PrimitiveNode } from 'neucli/core';
+import type { ClassVariants, Config, Flows, InstanceNode, Node, Page, PrimitiveNode, StateValue } from 'neucli/core';
 import type { ElementType } from 'react';
 
 export const NID_ATTR = 'data-nid';
@@ -23,10 +28,44 @@ export const NSLOT_ATTR = 'data-nslot';
 
 type Scope = Record<string, unknown> | null;
 
+/** State declared by one frame, linked to the frames around it. */
+export interface StateFrame {
+  values: Record<string, StateValue>;
+  /** Live only: change a value (updater form, like React's). */
+  set: ((name: string, next: (current: StateValue) => StateValue) => void) | null;
+  parent: StateFrame | null;
+}
+
+/** Edit-mode state values previewed from the panel, by node id. */
+export type StatePreview = Record<string, Record<string, StateValue>>;
+
+function lookupFrame(frame: StateFrame | null, name: string): StateFrame | null {
+  for (let f = frame; f; f = f.parent) if (name in f.values) return f;
+  return null;
+}
+
+function stateGet(frame: StateFrame | null) {
+  return (name: string) => lookupFrame(frame, name)?.values[name];
+}
+
+function stateNames(frame: StateFrame | null): Record<string, StateValue> {
+  const out: Record<string, StateValue> = {};
+  const chain: StateFrame[] = [];
+  for (let f = frame; f; f = f.parent) chain.unshift(f);
+  for (const f of chain) Object.assign(out, f.values);
+  return out;
+}
+
 interface Ctx {
   config: Config;
   /** Component props in scope for `{name}` interpolation; null outside components. */
   scope: Scope;
+  /** State from enclosing frames (and the current one, for its own on/when/attrs). */
+  state?: StateFrame | null;
+  /** Preview: interactions run. Otherwise state shows initial / previewed values. */
+  live?: boolean;
+  /** Values previewed from the panel (edit mode), by node id. */
+  preview?: StatePreview;
   /** Rendered slot content while inside a component. */
   slots: Record<string, ReactNode>;
   /** Editing a main component: its own slots show as placeholders. */
@@ -44,7 +83,8 @@ const PLACEHOLDER_STYLE = {
 
 /** Props a component root receives from the instance that placed it. */
 interface RootOverride {
-  className: string;
+  /** The root's classes for the current state (state styles on the root can change them). */
+  classes: (get: (name: string) => StateValue | undefined) => string;
   rest: Record<string, unknown>;
 }
 
@@ -72,13 +112,84 @@ function textOf(value: unknown): ReactNode {
   return String(value);
 }
 
-/** `attrs:` as React props. Whole-value `{expr}` inside components is code, which the canvas can't run. */
-function extraAttrs(attrs: Record<string, unknown> | undefined, scope: Scope): Record<string, unknown> {
+/**
+ * `attrs:` as React props. A whole-value `{condition}` over state is live
+ * (`aria-selected`); any other whole-value `{expr}` inside components is code,
+ * which the canvas can't run.
+ */
+function extraAttrs(attrs: Record<string, unknown> | undefined, scope: Scope, state: StateFrame | null = null): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(attrs ?? {})) {
     if (/^on[A-Z]/.test(key)) continue;
+    const c = attrCondition(value, (name) => !!lookupFrame(state, name));
+    if (c) {
+      out[key] = evalCondition(c, stateGet(state));
+      continue;
+    }
     if (typeof value === 'string' && scope && /^\{[^{}]+\}$/.test(value)) continue;
     out[key === 'class' ? 'className' : key] = typeof value === 'string' ? interpolate(value, scope) : value;
+  }
+  return out;
+}
+
+/** Interpolation scope: props plus state values. */
+function scopeWith(ctx: Ctx): Scope {
+  if (!ctx.state) return ctx.scope;
+  return { ...(ctx.scope ?? {}), ...stateNames(ctx.state) };
+}
+
+/** Holds one frame's state: live React state in Preview, initial + previewed values otherwise. */
+function StateScope({ initial, preview, live, parent, render }: {
+  initial: Record<string, StateValue>;
+  preview?: Record<string, StateValue>;
+  live: boolean;
+  parent: StateFrame | null;
+  render: (frame: StateFrame) => ReactNode;
+}) {
+  const [values, setValues] = useState(initial);
+  // Editing the initial values (or switching modes) starts over from them.
+  const key = JSON.stringify(initial);
+  useEffect(() => setValues(initial), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frame: StateFrame = live
+    ? { values, parent, set: (name, next) => setValues((prev) => ({ ...prev, [name]: next(prev[name]) })) }
+    : { values: { ...initial, ...preview }, parent, set: null };
+  return <>{render(frame)}</>;
+}
+
+/** Run an action against the state chain (Preview only). */
+function runAction(src: string, state: StateFrame | null) {
+  const action = parseAction(src);
+  if (!action) return;
+  const owner = lookupFrame(state, action.name);
+  owner?.set?.(action.name, (current) => applyAction(action, current));
+}
+
+/** `on:` as live handlers, the same semantics as generated code. */
+function eventProps(node: PrimitiveNode, ctx: Ctx): Record<string, unknown> {
+  const on = (node as { on?: Record<string, string> }).on;
+  if (!on || !ctx.live) return {};
+  const state = ctx.state ?? null;
+  const out: Record<string, unknown> = {};
+  for (const [event, src] of Object.entries(on)) {
+    const run = () => runAction(src, state);
+    if (event === 'click') {
+      const tag = (node as { tag?: string }).tag ?? (node.type === 'text' ? 'p' : node.type === 'link' ? 'a' : 'div');
+      if (node.type === 'link' || INTERACTIVE_TAGS.has(tag)) {
+        out.onClick = (e: { preventDefault: () => void }) => {
+          if (node.type === 'link' && (node as { href: string }).href.startsWith('#')) e.preventDefault();
+          run();
+        };
+        if (tag === 'button' && !(node as { attrs?: Record<string, unknown> }).attrs?.type) out.type = 'button';
+      } else {
+        Object.assign(out, onPress(run));
+      }
+    } else if (event === 'submit') {
+      out.onSubmit = (e: { preventDefault: () => void }) => {
+        e.preventDefault();
+        run();
+      };
+    } else if (event === 'mouseenter') out.onMouseEnter = run;
+    else if (event === 'mouseleave') out.onMouseLeave = run;
   }
   return out;
 }
@@ -88,19 +199,48 @@ function childNid(nid: string | null, ...segments: (string | number)[]): string 
 }
 
 export function renderNode(any: Node, parent: Flows, ctx: Ctx, nid: string | null, root?: RootOverride): ReactNode {
-  if (isInstance(any)) return renderInstance(any, parent, ctx, nid, null);
-  const node = any as PrimitiveNode;
+  const node = any as PrimitiveNode | InstanceNode;
+  // visibleWhen reads the enclosing frames' state. A dialog handles it itself (open / closed).
+  const visibleWhen = (node as { visibleWhen?: string }).visibleWhen;
+  const dialog = node.type === 'frame' && (node as { tag?: string }).tag === 'dialog';
+  if (visibleWhen && !dialog) {
+    const c = parseCondition(visibleWhen);
+    if (c && lookupFrame(ctx.state ?? null, c.name) && !evalCondition(c, stateGet(ctx.state ?? null))) return null;
+  }
+  if (isInstance(node)) return renderInstance(node, parent, ctx, nid, null);
   if (node.type === 'slot') {
     if (ctx.editingSlots) {
       return <div {...(nid !== null ? { [NID_ATTR]: nid } : {})} style={PLACEHOLDER_STYLE}>{node.name ? `slot: ${node.name}` : 'slot'}</div>;
     }
     return ctx.slots[node.name ?? 'children'] ?? null;
   }
+  const state = (node as { state?: Record<string, StateValue> }).state;
+  if (state && Object.keys(state).length) {
+    return (
+      <StateScope
+        initial={state}
+        preview={nid !== null ? ctx.preview?.[nid] : undefined}
+        live={!!ctx.live}
+        parent={ctx.state ?? null}
+        render={(frame) => renderPrimitive(node, parent, { ...ctx, state: frame }, nid, root)}
+      />
+    );
+  }
+  return renderPrimitive(node, parent, ctx, nid, root);
+}
 
+function variantsClass(v: ClassVariants, ctx: Ctx): string {
+  return v.variants.length ? pickVariant(v, stateGet(ctx.state ?? null)) : v.base;
+}
+
+function renderPrimitive(node: Exclude<PrimitiveNode, { type: 'slot' }>, parent: Flows, ctx: Ctx, nid: string | null, root?: RootOverride): ReactNode {
+  const scope = scopeWith(ctx);
+  const state = ctx.state ?? null;
   const common: Record<string, unknown> = {
     ...(node.id ? { id: node.id } : {}),
-    className: root ? root.className : nodeClasses(node, parent) || undefined,
-    ...extraAttrs(node.attrs, ctx.scope),
+    className: (root ? root.classes(stateGet(state)) : variantsClass(nodeClassVariants(node, parent), ctx)) || undefined,
+    ...extraAttrs(node.attrs, ctx.scope ? scope : null, state),
+    ...eventProps(node, ctx),
     ...(root?.rest ?? {}),
     ...(nid !== null ? { [NID_ATTR]: nid } : {}),
   };
@@ -108,27 +248,40 @@ export function renderNode(any: Node, parent: Flows, ctx: Ctx, nid: string | nul
     (children ?? []).map((c, i) => <Fragment key={i}>{renderNode(c, flows, ctx, childNid(nid, i))}</Fragment>);
 
   switch (node.type) {
-    case 'frame':
-      return (
-        <Frame tag={(node.tag ?? 'div') as ElementType} {...common}>
-          {kids(node.children, childFlows(sourceOf(node, 'frame')))}
-        </Frame>
-      );
+    case 'frame': {
+      const children = kids(node.children, childFlows(sourceOf(node, 'frame')));
+      if (node.tag === 'dialog') {
+        const c = parseCondition(node.visibleWhen ?? '');
+        const owner = c ? lookupFrame(state, c.name) : null;
+        const open = !!c && !!owner && evalCondition(c, stateGet(state));
+        return (
+          <Dialog
+            open={open}
+            modal={!!ctx.live}
+            onClose={() => owner?.set?.(c!.name, () => !!c!.negate)}
+            {...common}
+          >
+            {children}
+          </Dialog>
+        );
+      }
+      return <Frame tag={(node.tag ?? 'div') as ElementType} {...common}>{children}</Frame>;
+    }
     case 'text':
-      return <Text tag={(node.tag ?? 'p') as ElementType} {...common}>{textOf(interpolate(node.content, ctx.scope))}</Text>;
+      return <Text tag={(node.tag ?? 'p') as ElementType} {...common}>{textOf(interpolate(node.content, scope))}</Text>;
     case 'image':
       return (
         <Image
-          src={String(interpolate(node.src, ctx.scope) ?? '')}
-          {...(node.alt !== undefined ? { alt: String(interpolate(node.alt, ctx.scope) ?? '') } : {})}
+          src={String(interpolate(node.src, scope) ?? '')}
+          {...(node.alt !== undefined ? { alt: String(interpolate(node.alt, scope) ?? '') } : {})}
           {...common}
         />
       );
     case 'link':
       return (
-        <Link href={String(interpolate(node.href, ctx.scope) ?? '')} newTab={node.newTab} {...common}>
+        <Link href={String(interpolate(node.href, scope) ?? '')} newTab={node.newTab} {...common}>
           {node.content !== undefined
-            ? textOf(interpolate(node.content, ctx.scope))
+            ? textOf(interpolate(node.content, scope))
             : kids(node.children, childFlows(sourceOf(node, 'link')))}
         </Link>
       );
@@ -138,9 +291,9 @@ export function renderNode(any: Node, parent: Flows, ctx: Ctx, nid: string | nul
           multiline={node.multiline}
           {...(!node.multiline && node.inputType ? { type: node.inputType } : {})}
           {...(node.field ? { name: node.field } : {})}
-          {...(node.placeholder !== undefined ? { placeholder: String(interpolate(node.placeholder, ctx.scope) ?? '') } : {})}
+          {...(node.placeholder !== undefined ? { placeholder: String(interpolate(node.placeholder, scope) ?? '') } : {})}
           required={node.required}
-          readOnly
+          readOnly={!ctx.live}
           {...common}
         />
       );
@@ -167,8 +320,9 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
   for (const [prop, d] of Object.entries((def.props ?? {}) as Record<string, { default?: unknown }>)) {
     scope[prop] = d.default;
   }
+  const outer = scopeWith(ctx);
   for (const [prop, value] of Object.entries(node.props ?? {})) {
-    scope[prop] = typeof value === 'string' ? interpolate(value, ctx.scope) : value;
+    scope[prop] = typeof value === 'string' ? interpolate(value, outer) : value;
   }
 
   const slots: Record<string, ReactNode> = {};
@@ -188,20 +342,25 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
     }
   }
 
-  const inner: Ctx = { config: ctx.config, scope, slots };
+  // The component's own tree starts a fresh state chain (state is lexical to a file).
+  const inner: Ctx = { config: ctx.config, scope, slots, live: ctx.live, state: null };
   const overrides = forward ? forward.overrides : rootOverrides(ctx.config, def, node, parent);
   const className = forward ? forward.className : node.className;
   const rest = forward
     ? forward.rest
     : {
         ...(node.id ? { id: node.id } : {}),
-        ...extraAttrs(node.attrs, ctx.scope),
+        ...extraAttrs(node.attrs, ctx.scope ? outer : null, ctx.state ?? null),
         ...(nid !== null ? { [NID_ATTR]: nid } : {}),
       };
 
   const root = def.root;
   if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { overrides, className, rest });
-  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), overrides, className), rest });
+  const restVariants = componentRestVariants(def);
+  return renderNode(root, COLUMN_FLOWS, inner, null, {
+    classes: (get) => cx(restVariants.variants.length ? pickVariant(restVariants, get) : restVariants.base, overrides, className),
+    rest,
+  });
 }
 
 /**
@@ -209,7 +368,7 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
  * would render it: declared props show their defaults, and the component's
  * slots show as placeholders so they can be selected and moved.
  */
-export function ComponentView({ config, name, dropSlots }: { config: Config; name: string; dropSlots?: boolean }): ReactNode {
+export function ComponentView({ config, name, dropSlots, live, preview }: { config: Config; name: string; dropSlots?: boolean; live?: boolean; preview?: StatePreview }): ReactNode {
   const def = config.components?.[name];
   if (!def?.root) return null;
   const scope: Record<string, unknown> = {};
@@ -218,34 +377,42 @@ export function ComponentView({ config, name, dropSlots }: { config: Config; nam
     // A text prop without a default would render nothing, leaving nothing to click: show its name instead.
     scope[prop] = d.default ?? (d.type === 'text' ? `{${prop}}` : undefined);
   }
-  const ctx: Ctx = { config, scope, slots: {}, editingSlots: true, dropSlots };
+  const ctx: Ctx = { config, scope, slots: {}, editingSlots: true, dropSlots, live, preview };
   const root = def.root;
   if (isInstance(root)) return renderNode(root, COLUMN_FLOWS, ctx, '0');
-  const className = cx(componentRestClasses(def), rootOverrides(config, def, null, COLUMN_FLOWS));
-  return renderNode(root, COLUMN_FLOWS, ctx, '0', { className, rest: {} });
+  const restVariants = componentRestVariants(def);
+  const overrides = rootOverrides(config, def, null, COLUMN_FLOWS);
+  return renderNode(root, COLUMN_FLOWS, ctx, '0', {
+    classes: (get) => cx(restVariants.variants.length ? pickVariant(restVariants, get) : restVariants.base, overrides),
+    rest: {},
+  });
 }
 
 /** A page inside its layout, as `App.tsx` + the page component would render it. */
-export function PageView({ config, page, dropSlots }: { config: Config; page: Page; dropSlots?: boolean }): ReactNode {
-  const ctx: Ctx = { config, scope: null, slots: {}, dropSlots };
+export function PageView({ config, page, dropSlots, live, preview }: { config: Config; page: Page; dropSlots?: boolean; live?: boolean; preview?: StatePreview }): ReactNode {
+  const ctx: Ctx = { config, scope: null, slots: {}, dropSlots, live, preview };
   const parent = pageParentFlows(config, page);
   const sections = page.sections.map((s, i) => <Fragment key={i}>{renderNode(s, parent, ctx, String(i))}</Fragment>);
   const layout = layoutOf(config, page);
   if (!layout || !config.components?.[layout]?.root) return <>{sections}</>;
-  return <LayoutWithContent config={config} layout={layout}>{sections}</LayoutWithContent>;
+  return <LayoutWithContent config={config} layout={layout} live={live}>{sections}</LayoutWithContent>;
 }
 
 /** Render a layout component with already-rendered page content in its default slot. */
-function LayoutWithContent({ config, layout, children }: { config: Config; layout: string; children: ReactNode }): ReactNode {
+function LayoutWithContent({ config, layout, live, children }: { config: Config; layout: string; live?: boolean; children: ReactNode }): ReactNode {
   const def = config.components![layout];
   // A layout gets no props from a page, so declared props render their defaults, as in generated code.
   const scope: Record<string, unknown> = {};
   for (const [prop, d] of Object.entries((def.props ?? {}) as Record<string, { default?: unknown } | string>)) {
     scope[prop] = typeof d === 'object' ? d.default : undefined;
   }
-  const inner: Ctx = { config, scope, slots: { children } };
+  const inner: Ctx = { config, scope, slots: { children }, live };
   const overrides = rootOverrides(config, def, null, COLUMN_FLOWS);
   const root = def.root!;
   if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { overrides, className: undefined, rest: {} });
-  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), overrides), rest: {} });
+  const restVariants = componentRestVariants(def);
+  return renderNode(root, COLUMN_FLOWS, inner, null, {
+    classes: (get) => cx(restVariants.variants.length ? pickVariant(restVariants, get) : restVariants.base, overrides),
+    rest: {},
+  });
 }

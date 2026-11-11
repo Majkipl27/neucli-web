@@ -53,6 +53,9 @@ export default function Canvas() {
   const requestFit = useUIStore((s) => s.requestFit);
   const breakpoint = useUIStore((s) => s.breakpoint);
   const setBreakpoint = useUIStore((s) => s.setBreakpoint);
+  const preview = useUIStore((s) => s.preview);
+  const setPreview = useUIStore((s) => s.setPreview);
+  const statePreviewAll = useUIStore((s) => s.statePreview);
   /** Simulated viewport for the active breakpoint. The page's media queries see this width. */
   const VIEWPORT = VIEWPORTS[breakpoint];
 
@@ -80,6 +83,33 @@ export default function Canvas() {
 
   const interactions = useCanvasInteractions(doc, sizerRef);
   useEffect(() => setCanvasDocument(doc), [doc]);
+  // Previewed state values belong to one page / main component.
+  const statePreview = statePreviewAll.scope === pageIndex ? statePreviewAll.values : undefined;
+
+  // Preview: the part of the page on screen, so a modal dialog opens where you're looking.
+  const [view, setView] = useState<{ top: number; height: number } | undefined>(undefined);
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!preview || !scroller) return;
+    const update = () => {
+      const sizer = sizerRef.current;
+      if (!sizer) return;
+      const z = useUIStore.getState().zoom;
+      const s = sizer.getBoundingClientRect();
+      const v = scroller.getBoundingClientRect();
+      const top = Math.max(0, (v.top - s.top) / z);
+      setView({ top, height: Math.min(v.height / z, pageHeight - top) });
+    };
+    update();
+    scroller.addEventListener('scroll', update, { passive: true });
+    return () => scroller.removeEventListener('scroll', update);
+  }, [preview, zoom, pageHeight]);
+
+  const handleNavigate = useCallback((href: string) => {
+    const path = href.split('#')[0] || '/';
+    const index = useDocumentStore.getState().config.pages.findIndex((p) => p.path === path);
+    if (index >= 0 && index !== useSelectionStore.getState().pageIndex) setPage(index);
+  }, [setPage]);
   const box = measure(doc, selectedKey);
   const sizeLabel = selectedNode && box
     ? interactions.resizing
@@ -277,6 +307,16 @@ export default function Canvas() {
             </div>
           )}
           <BreakpointSwitch value={breakpoint} onChange={setBreakpoint} />
+          <button
+            type="button"
+            title={preview ? 'Back to editing (Esc)' : 'Try the page: clicks run interactions'}
+            onClick={() => setPreview(!preview)}
+            className={`mb-1 ml-2 h-6 rounded px-2.5 text-[11px] font-medium transition ${
+              preview ? 'bg-emerald-500/25 text-emerald-100 hover:bg-emerald-500/35' : 'bg-white/[0.06] text-white/60 hover:bg-white/10 hover:text-white'
+            }`}
+          >
+            {preview ? 'Stop preview' : 'Preview'}
+          </button>
         </div>
 
         <div className="flex w-max min-w-full justify-center" style={{ padding: PAD, paddingBottom: "40vh" }}>
@@ -296,19 +336,23 @@ export default function Canvas() {
                     config={rendered}
                     page={page}
                     component={renderedComponent}
-                    dropSlots={interactions.moving}
+                    dropSlots={interactions.moving && !preview}
                     width={VIEWPORT.width}
                     viewportHeight={VIEWPORT.height}
                     onHeight={setPageHeight}
                     onLayout={notifyLayout}
-                    onPointer={interactions.onPointer}
+                    onPointer={preview ? noop : interactions.onPointer}
+                    live={preview}
+                    statePreview={preview ? undefined : statePreview}
+                    onNavigate={handleNavigate}
+                    view={view}
                     renderKey={interactions.renderKey}
                     onWheel={handlePageWheel}
                     onDocument={setDoc}
                   />
                 )}
               </ErrorBoundary>
-              <Overlay
+              {!preview && <Overlay
                 doc={doc}
                 zoom={zoom}
                 selectedKeys={selectedKeys}
@@ -321,7 +365,7 @@ export default function Canvas() {
                 dropInvalid={interactions.dropInvalid}
                 editing={interactions.editing}
                 onHandleDown={interactions.onHandleDown}
-              />
+              />}
             </div>
           </div>
         </div>
@@ -405,6 +449,8 @@ function ZoomWidget({ zoom, onZoomIn, onZoomOut, onFit }: { zoom: number; onZoom
     </div>
   );
 }
+
+function noop() {}
 
 interface PanState {
   startX: number;

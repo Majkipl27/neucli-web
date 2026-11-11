@@ -5,7 +5,14 @@
 
 import { create } from 'zustand';
 import type { Path } from '../document/types';
-import type { Breakpoint } from 'neucli/core';
+import type { Breakpoint, StateValue } from 'neucli/core';
+
+/** Which state style (`when` key) of which node the style panel is editing. */
+export interface StateStyleTarget {
+  /** `${scope}|${pathKey}` of the node. */
+  node: string;
+  when: string;
+}
 
 /** Simulated viewport per breakpoint. Tablet sits below 1024 (max-lg), phone below 768 (max-md). */
 export const VIEWPORTS: Record<Breakpoint, { width: number; height: number; label: string }> = {
@@ -65,6 +72,19 @@ interface UIState {
   confirm: ConfirmRequest | null;
   /** The Create component dialog is open. */
   createComponentOpen: boolean;
+  /** Preview: the canvas runs interactions instead of being edited. */
+  preview: boolean;
+  /**
+   * Edit mode: state values shown on the canvas instead of the initial ones,
+   * by the declaring node's id. Never saved. Tied to one canvas scope.
+   */
+  statePreview: { scope: number; values: Record<string, Record<string, StateValue>> };
+  stateStyle: StateStyleTarget | null;
+  setPreview: (preview: boolean) => void;
+  /** Preview one state value (undefined drops it, back to the initial value). */
+  setStatePreview: (scope: number, nid: string, name: string, value: StateValue | undefined) => void;
+  clearStatePreview: () => void;
+  setStateStyle: (target: StateStyleTarget | null) => void;
   setCreateComponentOpen: (open: boolean) => void;
 
   startDrag: (path: Path) => void;
@@ -127,6 +147,22 @@ export const useUIStore = create<UIState>((set, get) => ({
   confirm: null,
   createComponentOpen: false,
   setCreateComponentOpen: (createComponentOpen) => set({ createComponentOpen }),
+  preview: false,
+  statePreview: { scope: 0, values: {} },
+  stateStyle: null,
+  setPreview: (preview) => set({ preview, hoverKey: null }),
+  setStatePreview: (scope, nid, name, value) =>
+    set((s) => {
+      const values = s.statePreview.scope === scope ? { ...s.statePreview.values } : {};
+      const forNode = { ...(values[nid] ?? {}) };
+      if (value === undefined) delete forNode[name];
+      else forNode[name] = value;
+      if (Object.keys(forNode).length) values[nid] = forNode;
+      else delete values[nid];
+      return { statePreview: { scope, values } };
+    }),
+  clearStatePreview: () => set({ statePreview: { scope: 0, values: {} }, stateStyle: null }),
+  setStateStyle: (stateStyle) => set({ stateStyle }),
 
   startDrag: (path) => set({ dragFrom: path, dropTarget: null }),
   setDropTarget: (target) => set({ dropTarget: target }),
