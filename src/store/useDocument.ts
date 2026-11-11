@@ -29,6 +29,11 @@ export interface DispatchOptions {
   mode?: 'commit' | 'coalesce';
   /** Consecutive 'coalesce' dispatches with the same group merge into one entry. */
   group?: string;
+  /**
+   * Coalesce with the same group however long ago the last dispatch was. For
+   * gestures with pauses (scrubbing a number): give each gesture its own group.
+   */
+  sticky?: boolean;
 }
 
 interface HistoryMeta {
@@ -89,7 +94,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       lastMeta.mode === 'coalesce' &&
       lastMeta.group !== undefined &&
       lastMeta.group === options?.group &&
-      now - lastMeta.at <= COALESCE_WINDOW_MS;
+      (options?.sticky || now - lastMeta.at <= COALESCE_WINDOW_MS);
 
     const truncatedHistory = state.history.slice(0, state.index + 1);
     const truncatedMeta = state.meta.slice(0, state.index + 1);
