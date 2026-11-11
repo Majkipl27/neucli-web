@@ -6,7 +6,7 @@
  * normalisation come from `neucli/core`, the same code the CLI runs.
  */
 
-import { parse, Document, isMap, isSeq, isScalar, visit } from 'yaml';
+import { parse, Document, isMap, isPair, isSeq, isScalar, visit } from 'yaml';
 import { validate } from 'neucli/core';
 import type { Config } from './types';
 
@@ -33,29 +33,68 @@ export function exportConfig(config: Config): string {
 }
 
 /**
- * YAML for any value. Collections nested at least `minDepth` levels deep go
- * on one line when they're small (`layout: { gap: 16, padding: [24, 32] }`).
+ * YAML for any value, in the house style:
+ * - layers (anything with `type:`) are always blocks, so the tree reads top-down;
+ * - small style values nested at least `minDepth` levels deep go on one line
+ *   (`layout: { gap: 16, padding: [24, 32] }`, `props: { title: Pro }`);
+ * - `theme`, `meta`, `responsive`, `imports` and a component's prop
+ *   declarations stay blocks, one entry per line.
  */
 export function toYaml(value: unknown, minDepth = 1): string {
   const doc = new Document(value);
+  const inline = (node: unknown, path: readonly unknown[]) =>
+    path.length > minDepth &&
+    !isLayer(node) &&
+    !isPropDeclarations(path) &&
+    !BLOCK_KEYS.has(ownKey(path) ?? '') &&
+    !BLOCK_SECTIONS.has(topKey(path) ?? '') &&
+    isSmall(node);
   visit(doc, {
     Map(_key, node, path) {
-      if (path.length > minDepth && isSmall(node)) node.flow = true;
+      if (inline(node, path)) node.flow = true;
     },
     Seq(_key, node, path) {
-      if (path.length > minDepth && isSmall(node)) node.flow = true;
+      if (inline(node, path)) node.flow = true;
     },
   });
   // The library pads `{ }` and `[ ]` alike; hand-written configs pad maps but
   // not short lists (`padding: [24, 32]`), so tighten plain-token lists only.
   return doc
-    .toString({ lineWidth: 0, indentSeq: true })
+    .toString({ lineWidth: 0, indentSeq: true, singleQuote: true })
     .replace(TIGHT_SEQ, (_m, before: string, items: string) => `${before}[${items}]`);
+}
+
+const BLOCK_SECTIONS = new Set(['theme', 'meta']);
+/** Keys whose value stays a block (its entries may still be one-liners). */
+const BLOCK_KEYS = new Set(['responsive', 'imports']);
+
+/** The key this collection is the value of, if any. */
+function ownKey(path: readonly unknown[]): string | undefined {
+  const pair = path[path.length - 1];
+  return isPair(pair) && isScalar(pair.key) ? String(pair.key.value) : undefined;
+}
+
+function isLayer(node: unknown): boolean {
+  return isMap(node) && node.items.some((p) => isScalar(p.key) && p.key.value === 'type');
+}
+
+/** `components.Card.props`: the map holding the `props` pair also has a `root`. */
+function isPropDeclarations(path: readonly unknown[]): boolean {
+  const pair = path[path.length - 1];
+  const owner = path[path.length - 2];
+  return isPair(pair) && isScalar(pair.key) && pair.key.value === 'props' &&
+    isMap(owner) && owner.items.some((p) => isScalar(p.key) && p.key.value === 'root');
+}
+
+/** The top-level config key a node sits under (`theme`, `pages`, ...). */
+function topKey(path: readonly unknown[]): string | undefined {
+  const pair = path.find(isPair);
+  return pair && isScalar(pair.key) ? String(pair.key.value) : undefined;
 }
 
 const TIGHT_SEQ = /(: |, |\[|- )\[ ((?:[\w.#%/-]+, )*[\w.#%/-]+) \]/g;
 
-const FLOW_MAX = 72;
+const FLOW_MAX = 96;
 
 function isSmall(node: unknown): boolean {
   const items = isMap(node) ? node.items.map((p) => p.value) : isSeq(node) ? node.items : null;
@@ -67,6 +106,8 @@ function isSmall(node: unknown): boolean {
     }
     // One level of nesting for number pairs like padding: [16, 32].
     if (isSeq(item) && item.items.every((i) => isScalar(i) && typeof i.value === 'number')) continue;
+    // Small style maps inside overrides: phone: { layout: { padding: [16, 16] } }.
+    if (isMap(item) && !isLayer(item) && isSmall(item)) continue;
     return false;
   }
   return JSON.stringify((node as { toJSON(): unknown }).toJSON()).length <= FLOW_MAX;
