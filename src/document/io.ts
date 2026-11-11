@@ -1,63 +1,78 @@
 /**
- * YAML import/export. Strips editor-only fields on write and validates on read.
+ * YAML import/export.
+ *
+ * The editor keeps the document as written (prop shorthands, number content,
+ * key order) so exporting doesn't rewrite a hand-written file. Validation and
+ * normalisation come from `neucli/core`, the same code the CLI runs.
  */
 
-import yaml from 'js-yaml';
-import type { NeucliConfig, NeucliNode } from './types';
-import { NeucliConfigSchema, formatZodError } from './schema';
+import { parse, Document, isMap, isSeq, isScalar, visit } from 'yaml';
+import { validate } from 'neucli/core';
+import type { Config } from './types';
 
 export type ImportResult =
-  | { ok: true; config: NeucliConfig }
+  | { ok: true; config: Config; warnings: string[] }
   | { ok: false; error: string };
 
-/** Parse and validate a YAML string into a NeucliConfig. Never throws. */
+/** Parse and validate YAML. Never throws. */
 export function importConfig(text: string): ImportResult {
-  let parsed: unknown;
+  let raw: unknown;
   try {
-    parsed = yaml.load(text);
+    raw = parse(text);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: `YAML parse error: ${msg}` };
+    return { ok: false, error: `YAML parse error: ${e instanceof Error ? e.message : String(e)}` };
   }
+  const result = validate(raw);
+  if (result.errors.length > 0) return { ok: false, error: result.errors.slice(0, 5).join('\n') };
+  return { ok: true, config: raw as Config, warnings: result.warnings };
+}
 
-  const result = NeucliConfigSchema.safeParse(parsed);
-  if (!result.success) {
-    return { ok: false, error: `Invalid config: ${formatZodError(result.error)}` };
+/** Readable YAML: small mappings and lists of plain values go on one line, like hand-written configs. */
+export function exportConfig(config: Config): string {
+  return toYaml(config, 3);
+}
+
+/**
+ * YAML for any value. Collections nested at least `minDepth` levels deep go
+ * on one line when they're small (`layout: { gap: 16, padding: [24, 32] }`).
+ */
+export function toYaml(value: unknown, minDepth = 1): string {
+  const doc = new Document(value);
+  visit(doc, {
+    Map(_key, node, path) {
+      if (path.length > minDepth && isSmall(node)) node.flow = true;
+    },
+    Seq(_key, node, path) {
+      if (path.length > minDepth && isSmall(node)) node.flow = true;
+    },
+  });
+  // The library pads `{ }` and `[ ]` alike; hand-written configs pad maps but
+  // not short lists (`padding: [24, 32]`), so tighten plain-token lists only.
+  return doc
+    .toString({ lineWidth: 0, indentSeq: true })
+    .replace(TIGHT_SEQ, (_m, before: string, items: string) => `${before}[${items}]`);
+}
+
+const TIGHT_SEQ = /(: |, |\[|- )\[ ((?:[\w.#%/-]+, )*[\w.#%/-]+) \]/g;
+
+const FLOW_MAX = 72;
+
+function isSmall(node: unknown): boolean {
+  const items = isMap(node) ? node.items.map((p) => p.value) : isSeq(node) ? node.items : null;
+  if (!items || items.length === 0) return false;
+  for (const item of items) {
+    if (isScalar(item)) {
+      if (typeof item.value === 'string' && item.value.includes('\n')) return false;
+      continue;
+    }
+    // One level of nesting for number pairs like padding: [16, 32].
+    if (isSeq(item) && item.items.every((i) => isScalar(i) && typeof i.value === 'number')) continue;
+    return false;
   }
-
-  return { ok: true, config: result.data as NeucliConfig };
+  return JSON.stringify((node as { toJSON(): unknown }).toJSON()).length <= FLOW_MAX;
 }
 
-/** Serialise to a YAML string, stripping editor-only metadata. */
-export function exportConfig(config: NeucliConfig): string {
-  const clean = stripEditorMetadata(config);
-  return yaml.dump(clean, { noRefs: true, indent: 2, lineWidth: -1 });
-}
-
-function stripEditorMetadata(config: NeucliConfig): NeucliConfig {
-  return {
-    ...config,
-    pages: config.pages.map((page) => ({
-      ...page,
-      sections: page.sections.map(stripNode),
-    })),
-    globals: config.globals
-      ? {
-          navbar: config.globals.navbar ? stripNode(config.globals.navbar) : undefined,
-          footer: config.globals.footer ? stripNode(config.globals.footer) : undefined,
-        }
-      : undefined,
-  };
-}
-
-function stripNode(node: NeucliNode): NeucliNode {
-  const { id: _drop, children, ...rest } = node;
-  const out: NeucliNode = { ...rest };
-  if (children && children.length > 0) out.children = children.map(stripNode);
-  return out;
-}
-
-export function filenameFor(config: NeucliConfig): string {
+export function filenameFor(config: Config): string {
   const slug = config.meta.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  return `${slug || 'neucli-config'}.yml`;
+  return `${slug || 'neucli'}.yml`;
 }

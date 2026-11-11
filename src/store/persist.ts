@@ -7,11 +7,11 @@
  * entry.
  */
 
-import type { NeucliConfig } from '../document/types';
-import { NeucliConfigSchema } from '../document/schema';
+import { validate } from 'neucli/core';
+import type { Config } from '../document/types';
 import { useDocumentStore } from './useDocument';
 
-const STORAGE_KEY = 'neucli-web:doc:v1';
+const STORAGE_KEY = 'neucli-web:doc:v2';
 const DEBOUNCE_MS = 400;
 
 /**
@@ -22,7 +22,7 @@ const DEBOUNCE_MS = 400;
  * Intentionally depends on nothing from this package's store, so
  * `useDocument.ts` can call it at module init without a circular import.
  */
-export function loadPersistedConfig(): NeucliConfig | null {
+export function loadPersistedConfig(): Config | null {
   if (typeof window === 'undefined') return null;
   let raw: string | null;
   try {
@@ -34,9 +34,8 @@ export function loadPersistedConfig(): NeucliConfig | null {
 
   try {
     const parsed = JSON.parse(raw);
-    const result = NeucliConfigSchema.safeParse(parsed);
-    if (!result.success) return null;
-    return result.data as NeucliConfig;
+    if (validate(parsed).errors.length > 0) return null;
+    return parsed as Config;
   } catch {
     return null;
   }
@@ -52,9 +51,9 @@ export function clearPersistedConfig(): void {
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
-let lastWritten: NeucliConfig | null = null;
+let lastWritten: Config | null = null;
 
-function write(config: NeucliConfig): void {
+function write(config: Config): void {
   if (typeof window === 'undefined') return;
   if (config === lastWritten) return;
   try {

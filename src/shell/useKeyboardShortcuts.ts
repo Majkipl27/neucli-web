@@ -3,15 +3,14 @@ import { useDocumentStore } from '../store/useDocument';
 import { useSelectionStore } from '../store/useSelection';
 import { useUIStore } from '../store/useUI';
 import {
-  appendToPage as cmdAppendToPage,
   deleteNode as cmdDeleteNode,
   duplicateNode as cmdDuplicateNode,
-  insertSibling as cmdInsertSibling,
+  insertNode as cmdInsertNode,
 } from '../document/commands';
 import { getAt } from '../document/tree';
 import { getClipboardNode, setClipboardNode } from '../document/clipboard';
 import { exportConfig, filenameFor } from '../document/io';
-import type { NeucliNode } from '../document/types';
+import type { Node, Path, Selection } from '../document/types';
 
 /**
  * Returns true when the user is typing in a field; prevents shortcuts from
@@ -26,53 +25,32 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /** Serialize the currently-selected node into the in-memory clipboard. */
-function copySelection(selection: {
-  pageIndex: number;
-  path: number[];
-}): NeucliNode | null {
+function copySelection(selection: Selection): Node | null {
   const config = useDocumentStore.getState().config;
-  const sections = config.pages[selection.pageIndex]?.sections ?? [];
-  const node = getAt(sections, selection.path);
+  const node = getAt(config.pages[selection.pageIndex]?.sections ?? [], selection.path);
   if (!node) return null;
   setClipboardNode(node);
   return node;
 }
 
 /**
- * Paste a node into the current document. If something is selected the copy
- * is inserted as the next sibling (so repeated pastes stack cleanly); with no
- * selection it appends to the current page's top-level sections.
+ * Paste after the selection (so repeated pastes stack), or at the end of the
+ * page with nothing selected, then select the pasted node.
  */
-function pasteNode(node: NeucliNode): void {
-  const selection = useSelectionStore.getState().selection;
-  const pageIndex =
-    selection?.pageIndex ?? useSelectionStore.getState().pageIndex;
-
+function pasteNode(node: Node): void {
+  const { selection, pageIndex, select } = useSelectionStore.getState();
+  let path: Path | null = null;
   useDocumentStore.getState().dispatch((c) => {
-    if (selection && selection.path.length > 0) {
-      return cmdInsertSibling(c, selection, node);
-    }
-    return cmdAppendToPage(c, pageIndex, node);
-  });
-
-  // Move selection onto the freshly pasted node so further actions target it.
-  queueMicrotask(() => {
-    const state = useDocumentStore.getState();
-    const sections = state.config.pages[pageIndex]?.sections ?? [];
-    if (selection && selection.path.length > 0) {
-      const parentPath = selection.path.slice(0, -1);
-      const newIndex = selection.path[selection.path.length - 1] + 1;
-      useSelectionStore.getState().select({
-        pageIndex,
-        path: [...parentPath, newIndex],
-      });
+    const sections = c.pages[pageIndex]?.sections ?? [];
+    if (selection && selection.pageIndex === pageIndex) {
+      const idx = selection.path[selection.path.length - 1] as number;
+      path = [...selection.path.slice(0, -1), idx + 1];
     } else {
-      useSelectionStore.getState().select({
-        pageIndex,
-        path: [sections.length - 1],
-      });
+      path = [sections.length];
     }
+    return cmdInsertNode(c, pageIndex, path, node);
   });
+  if (path) select({ pageIndex, path });
 }
 
 function downloadYaml(): void {
@@ -96,6 +74,7 @@ function downloadYaml(): void {
  * - Ctrl/Cmd+D: duplicate selected node
  * - Ctrl/Cmd+C / X / V: copy / cut / paste subtree (skipped while typing)
  * - Ctrl/Cmd + "+" / "-" / "0": zoom the canvas in / out / to 100%
+ * - Shift+1 / Shift+2: zoom to fit / zoom to selection
  * - Delete / Backspace: delete selected node (only when not typing)
  * - Escape: close YAML drawer if open, otherwise clear selection
  */
@@ -139,6 +118,13 @@ export function useKeyboardShortcuts(): void {
       if (mod && e.key === '0') {
         e.preventDefault();
         useUIStore.getState().resetZoom();
+        return;
+      }
+
+      if (!mod && e.shiftKey && !typing && (e.code === 'Digit1' || e.code === 'Digit2')) {
+        e.preventDefault();
+        if (e.code === 'Digit1') useUIStore.getState().requestFit();
+        else useUIStore.getState().requestFocus();
         return;
       }
 

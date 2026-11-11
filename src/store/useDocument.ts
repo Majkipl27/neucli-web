@@ -8,14 +8,14 @@
  */
 
 import { create } from 'zustand';
-import type { NeucliConfig } from '../document/types';
-import { DEFAULT_CONFIG } from '../document/defaults';
+import type { Config } from '../document/types';
+import { loadExample } from '../document/examples';
 import { loadPersistedConfig } from './persist';
 
 // Hydrate from localStorage synchronously so a reload doesn't flash the
-// default config. Falls back to DEFAULT_CONFIG when nothing is saved or
-// the saved blob fails schema validation.
-const INITIAL_CONFIG: NeucliConfig = loadPersistedConfig() ?? DEFAULT_CONFIG;
+// example. Falls back to the Nova example when nothing is saved or the saved
+// document no longer validates.
+const INITIAL_CONFIG: Config = loadPersistedConfig() ?? loadExample('nova');
 
 const MAX_HISTORY = 100;
 const COALESCE_WINDOW_MS = 600;
@@ -38,8 +38,8 @@ interface HistoryMeta {
 }
 
 interface DocumentState {
-  config: NeucliConfig;
-  history: NeucliConfig[];
+  config: Config;
+  history: Config[];
   meta: HistoryMeta[];
   index: number;
 
@@ -47,10 +47,10 @@ interface DocumentState {
   canRedo: () => boolean;
 
   /** Replace the whole config (YAML import, "New"). Clears history. */
-  reset: (config: NeucliConfig) => void;
+  reset: (config: Config) => void;
 
   dispatch: (
-    command: (current: NeucliConfig) => NeucliConfig | null,
+    command: (current: Config) => Config | null,
     options?: DispatchOptions,
   ) => void;
 
@@ -140,4 +140,4 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 }));
 
-export const useConfig = (): NeucliConfig => useDocumentStore((s) => s.config);
+export const useConfig = (): Config => useDocumentStore((s) => s.config);

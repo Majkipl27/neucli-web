@@ -8,11 +8,11 @@ Neucli Web provides the frontend interface for managing block-based configuratio
 
 ## Tech Stack
 
-- Framework: React 18
+- Framework: React 19
 - Build Tool: Vite
 - Language: TypeScript
 - Styling: Tailwind CSS
-- Data Handling: js-yaml
+- Data Handling: yaml, with validation from `neucli/core`
 
 ## Getting Started
 
@@ -49,18 +49,12 @@ pnpm build
 
 ## Project Structure
 
-An architectural rewrite is in progress. See `NOTES.md` for the current plan,
-known UX issues, and the block-registry contract.
+The editor reads and writes the same YAML format as the CLI. The format, its validation and every class decision come from the CLI repo as `neucli/core`, linked from `../neucli`, so clone both repos side by side. The plan lives in `../neucli/ROADMAP.md`.
 
-The target layout is:
-
-- `src/document/`: document types, zod schema, pure tree operations, commands, YAML I/O.
-- `src/store/`: zustand stores (document with undo/redo, selection, UI).
-- `src/blocks/`: one `*.block.tsx` file per block type; auto-registered.
-- `src/shell/`: editor chrome (Toolbar, LeftSidebar, Canvas, RightPanel, YamlDrawer).
-- `src/tailwind/`: shared className-token primitives.
-
-Until Phase 3 lands, legacy files in `src/editor/` still render the editor.
+- `src/document/`: types, tree operations (paths reach into named slots), commands, YAML import/export, insert palette, bundled examples.
+- `src/store/`: zustand stores (document with undo/redo, selection, UI) and `useValidated`, the document as core validates it.
+- `src/canvas/`: the page rendered in an iframe with Tailwind v4 compiled in the browser, and the selection/hover overlay.
+- `src/shell/`: editor chrome (Toolbar, LeftSidebar, LayerTree, Canvas, RightPanel, YamlDrawer).
 
 ## License
 

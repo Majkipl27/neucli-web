@@ -1,74 +1,25 @@
 /**
- * Canonical types for Neucli documents.
- *
- * Wire format is fixed: these shapes must round-trip through the Neucli CLI's
- * YAML parser without loss. `id` on NeucliNode is editor-only metadata and
- * stripped on export (see document/io.ts).
+ * Editor document types. The format itself comes from `neucli/core`, so the
+ * editor and the CLI read and write exactly the same shapes.
  */
 
-export interface NeucliConfig {
-  meta: NeucliMeta;
-  theme?: NeucliTheme;
-  globals?: NeucliGlobals;
-  pages: NeucliPage[];
-  dependencies?: Record<string, string>;
-  components?: Record<string, unknown>;
-}
-
-export interface NeucliMeta {
-  name: string;
-  description?: string;
-  lang?: string;
-  favicon?: string;
-}
-
-export interface NeucliTheme {
-  colors?: Record<string, string>;
-  fonts?: Record<string, string>;
-  extend?: unknown;
-}
-
-export interface NeucliGlobals {
-  navbar?: NeucliNode;
-  footer?: NeucliNode;
-}
-
-export interface NeucliPage {
-  path: string;
-  name: string;
-  title?: string;
-  meta?: {
-    description?: string;
-  };
-  sections: NeucliNode[];
-}
-
-export interface NeucliNode {
-  type: string;
-  /** Editor-only; not persisted to YAML. */
-  id?: string;
-  className?: string;
-  props?: Record<string, unknown>;
-  attrs?: Record<string, unknown>;
-  children?: NeucliNode[];
-  /** Legacy textual content; prefer props.content for new blocks. */
-  text?: string;
-  /** Legacy semantic tag hint; prefer props.tag. */
-  tag?: string;
-}
+export type {
+  Config, Meta, Theme, Page, Node, PrimitiveNode, InstanceNode, FrameNode, TextNode, ImageNode, LinkNode,
+  InputNode, SlotNode, ComponentDef, PropDef, PropType, Style,
+} from 'neucli/core';
 
 /**
- * Path into a tree of NeucliNodes. An empty path refers to the root node list
- * (a page's `sections`); `[0]` is the first section; `[2, 1]` is the second
- * child of the third section; and so on.
+ * Path from a page's `sections` to a node.
+ *
+ * Numbers index into a node list; a string selects an instance's named slot.
+ * `[2]` is the third section, `[2, 0]` its first child, `[2, 'actions', 1]`
+ * the second node in section 2's `actions` slot. The last segment is always a
+ * number. A path with the last segment dropped is a *list path*: `[]` means
+ * the page's sections, `[2]` section 2's children, `[2, 'actions']` that slot.
  */
-export type Path = number[];
+export type Path = (number | string)[];
 
 export interface Selection {
   pageIndex: number;
   path: Path;
 }
-
-export type Target =
-  | { kind: 'sections'; pageIndex: number }
-  | { kind: 'node'; pageIndex: number; path: Path };

@@ -1,31 +1,35 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDocumentStore } from '../store/useDocument';
 import { useSelectionStore } from '../store/useSelection';
 import { useUIStore, ZOOM_MAX, ZOOM_MIN } from '../store/useUI';
-import {
-  insertAtTop as cmdInsertAtTop,
-  insertChild as cmdInsertChild,
-  moveTo as cmdMoveTo,
-  addPage as cmdAddPage,
-} from '../document/commands';
-import { createDefault } from '../blocks';
-import type { NeucliTheme, Path } from '../document/types';
-import PreviewTree from './PreviewTree';
+import { useValidated } from '../store/useValidated';
+import { addPage as cmdAddPage } from '../document/commands';
+import { getAt, parsePathKey, pathKey } from '../document/tree';
+import { labelFor } from '../document/palette';
+import CanvasFrame from '../canvas/CanvasFrame';
+import Overlay, { measure } from '../canvas/Overlay';
+import { notifyLayout } from '../canvas/layoutBus';
 import ErrorBoundary from './ErrorBoundary';
 
-const CANVAS_WIDTH = 1280;
+/** Simulated desktop viewport. Breakpoints in the page see this width. */
+const VIEWPORT = { width: 1280, height: 800 };
+const PAD = 64;
 const PAN_ACTIVATION_PX = 4;
 
+function clampZoom(z: number): number {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+}
+
 /**
- * Design-tool viewport behavior:
- * - Scroll-lock: wheel anywhere inside scrolls this container only.
- * - Grab-to-pan: mousedown on empty canvas background, drag to pan.
- * - Clicking empty space (no drag motion) deselects.
- * - The rendered document card swallows click/drag so it never fights the pan.
+ * Design-tool viewport:
+ * - wheel scrolls, Ctrl/Cmd+wheel zooms around the pointer (also over the page);
+ * - drag empty background to pan, click it to deselect;
+ * - click the page to select; selection and hover are drawn as an overlay.
  */
 export default function Canvas() {
   const config = useDocumentStore((s) => s.config);
   const dispatch = useDocumentStore((s) => s.dispatch);
+  const { config: rendered, errors } = useValidated();
 
   const pageIndex = useSelectionStore((s) => s.pageIndex);
   const selection = useSelectionStore((s) => s.selection);
@@ -33,70 +37,128 @@ export default function Canvas() {
   const select = useSelectionStore((s) => s.select);
   const clearSelection = useSelectionStore((s) => s.clear);
 
-  const dragFrom = useUIStore((s) => s.dragFrom);
-  const dropTarget = useUIStore((s) => s.dropTarget);
-  const startDrag = useUIStore((s) => s.startDrag);
-  const endDrag = useUIStore((s) => s.endDrag);
-  const setDropTarget = useUIStore((s) => s.setDropTarget);
-
   const zoom = useUIStore((s) => s.zoom);
   const setZoom = useUIStore((s) => s.setZoom);
   const zoomIn = useUIStore((s) => s.zoomIn);
   const zoomOut = useUIStore((s) => s.zoomOut);
-  const resetZoom = useUIStore((s) => s.resetZoom);
+  const hoverKey = useUIStore((s) => s.hoverKey);
+  const setHoverKey = useUIStore((s) => s.setHoverKey);
+  const fitRequest = useUIStore((s) => s.fitRequest);
+  const focusRequest = useUIStore((s) => s.focusRequest);
+  const requestFit = useUIStore((s) => s.requestFit);
 
   const scrollerRef = useRef<HTMLElement | null>(null);
+  const sizerRef = useRef<HTMLDivElement | null>(null);
   const panState = useRef<PanState | null>(null);
   const [isPanning, setIsPanning] = useState(false);
+  const [doc, setDoc] = useState<Document | null>(null);
+  const [pageHeight, setPageHeight] = useState(VIEWPORT.height);
 
-  const currentPage = config.pages[pageIndex];
+  const page = rendered.pages[pageIndex] ?? rendered.pages[0];
+  const selectedKey = selection && selection.pageIndex === pageIndex ? pathKey(selection.path) : null;
+  const selectedNode = selection ? getAt(config.pages[pageIndex]?.sections ?? [], selection.path) : null;
 
-  const handleSelect = useCallback(
-    (path: Path) => {
-      select({ pageIndex, path });
-    },
-    [pageIndex, select],
-  );
+  // --- zoom helpers -----------------------------------------------------------
 
-  const handleInsertAtIndex = useCallback(
-    (index: number, type: string) => {
-      dispatch((c) => cmdInsertAtTop(c, pageIndex, index, createDefault(type)));
-    },
-    [dispatch, pageIndex],
-  );
+  /** Zoom to `next`, keeping the page point under (clientX, clientY) in place. */
+  const zoomAround = useCallback((next: number, clientX: number, clientY: number) => {
+    const scroller = scrollerRef.current;
+    const sizer = sizerRef.current;
+    if (!scroller || !sizer) return;
+    const current = useUIStore.getState().zoom;
+    next = clampZoom(next);
+    if (next === current) return;
+    const s = sizer.getBoundingClientRect();
+    const pageX = (clientX - s.left) / current;
+    const pageY = (clientY - s.top) / current;
+    setZoom(next);
+    requestAnimationFrame(() => {
+      const after = sizer.getBoundingClientRect();
+      scroller.scrollLeft += after.left + pageX * next - clientX;
+      scroller.scrollTop += after.top + pageY * next - clientY;
+    });
+  }, [setZoom]);
 
-  const handleInsertChildAtPath = useCallback(
-    (parentPath: Path, index: number, type: string) => {
-      dispatch((c) =>
-        cmdInsertChild(c, { pageIndex, path: parentPath }, index, createDefault(type)),
-      );
-    },
-    [dispatch, pageIndex],
-  );
+  /** Scroll so the page rect (page px) sits centred in the viewport at the current zoom. */
+  const centerOn = useCallback((box: { x: number; y: number; w: number; h: number }) => {
+    requestAnimationFrame(() => {
+      const scroller = scrollerRef.current;
+      const sizer = sizerRef.current;
+      if (!scroller || !sizer) return;
+      const z = useUIStore.getState().zoom;
+      const s = sizer.getBoundingClientRect();
+      const v = scroller.getBoundingClientRect();
+      scroller.scrollLeft += s.left + (box.x + box.w / 2) * z - (v.left + v.width / 2);
+      scroller.scrollTop += s.top + (box.y + box.h / 2) * z - (v.top + v.height / 2);
+    });
+  }, []);
 
-  const handleDrop = useCallback(
-    (from: Path, toParentPath: Path, toIndex: number) => {
-      let newPath: Path | null = null;
-      dispatch((c) => {
-        const res = cmdMoveTo(c, pageIndex, from, [...toParentPath, toIndex]);
-        if (!res) return null;
-        newPath = res.newPath;
-        return res.config;
-      });
-      if (newPath) select({ pageIndex, path: newPath });
-    },
-    [dispatch, pageIndex, select],
-  );
+  // Zoom to fit the page width (Shift+1), on load and on page switch.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    setZoom(clampZoom(Math.min(1, (scroller.clientWidth - PAD * 2) / VIEWPORT.width)));
+    requestAnimationFrame(() => {
+      scroller.scrollTop = 0;
+      scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
+    });
+  }, [pageIndex, fitRequest, setZoom]);
 
-  const handleAddPage = useCallback(() => {
-    const result = cmdAddPage(config);
-    dispatch(() => result.config);
-    setPage(result.newIndex);
-  }, [config, dispatch, setPage]);
+  // Zoom to selection (Shift+2).
+  useEffect(() => {
+    if (focusRequest === 0) return;
+    const scroller = scrollerRef.current;
+    const box = measure(doc, selectedKey);
+    if (!scroller || !box) return;
+    const z = Math.min((scroller.clientWidth - PAD * 2) / box.w, (scroller.clientHeight - PAD * 2) / box.h);
+    setZoom(clampZoom(Math.min(z, 2)));
+    centerOn(box);
+    // Only on request, not when selection changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest]);
+
+  useEffect(() => notifyLayout(), [zoom, selectedKey]);
+
+  // --- canvas events ------------------------------------------------------------
+
+  const handlePick = useCallback((nid: string | null) => {
+    const idx = useSelectionStore.getState().pageIndex;
+    if (nid === null) useSelectionStore.getState().clear();
+    else useSelectionStore.getState().select({ pageIndex: idx, path: parsePathKey(nid) });
+  }, []);
+
+  const handlePageWheel = useCallback((e: WheelEvent) => {
+    const sizer = sizerRef.current;
+    const scroller = scrollerRef.current;
+    if (!sizer || !scroller) return;
+    // Page px -> editor client px.
+    const s = sizer.getBoundingClientRect();
+    const z = useUIStore.getState().zoom;
+    const clientX = s.left + e.clientX * z;
+    const clientY = s.top + e.clientY * z;
+    if (e.ctrlKey || e.metaKey) zoomAround(z * Math.exp(-e.deltaY * 0.0015), clientX, clientY);
+    else scroller.scrollBy(e.deltaX, e.deltaY);
+  }, [zoomAround]);
+
+  const handleWheel = useCallback((event: React.WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    zoomAround(useUIStore.getState().zoom * Math.exp(-event.deltaY * 0.0015), event.clientX, event.clientY);
+  }, [zoomAround]);
+
+  // Ctrl+wheel must be non-passive to stop the browser zooming the whole editor.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const block = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) e.preventDefault();
+    };
+    scroller.addEventListener('wheel', block, { passive: false });
+    return () => scroller.removeEventListener('wheel', block);
+  }, []);
 
   const handleBackgroundMouseDown = useCallback((event: React.MouseEvent) => {
-    if (event.button !== 0 && event.button !== 1) return;
-    if (!scrollerRef.current) return;
+    if ((event.button !== 0 && event.button !== 1) || !scrollerRef.current) return;
     panState.current = {
       startX: event.clientX,
       startY: event.clientY,
@@ -127,174 +189,130 @@ export default function Canvas() {
       setIsPanning(false);
       return;
     }
-    clearSelection();
+    if (state) clearSelection();
   }, [clearSelection]);
 
-  const handleBackgroundMouseLeave = useCallback(() => {
-    if (panState.current?.moved) {
-      setIsPanning(false);
-    }
-    panState.current = null;
-  }, []);
-
-  const handleWheel = useCallback(
-    (event: React.WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      // Ctrl/Cmd + wheel => zoom centred on the cursor.
-      event.preventDefault();
-      const scroller = scrollerRef.current;
-      if (!scroller) return;
-
-      const rect = scroller.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left + scroller.scrollLeft;
-      const pointerY = event.clientY - rect.top + scroller.scrollTop;
-
-      const current = useUIStore.getState().zoom;
-      const factor = Math.exp(-event.deltaY * 0.0015);
-      const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, current * factor));
-      if (next === current) return;
-
-      const ratio = next / current;
-      setZoom(next);
-
-      // Keep the pointer over the same canvas coordinate after scaling.
-      requestAnimationFrame(() => {
-        if (!scrollerRef.current) return;
-        scrollerRef.current.scrollLeft = pointerX * ratio - (event.clientX - rect.left);
-        scrollerRef.current.scrollTop = pointerY * ratio - (event.clientY - rect.top);
-      });
-    },
-    [setZoom],
-  );
-
-  const cursorClass = isPanning ? 'cursor-grabbing' : 'cursor-grab';
+  const handleAddPage = useCallback(() => {
+    const result = cmdAddPage(useDocumentStore.getState().config);
+    dispatch(() => result.config);
+    setPage(result.newIndex);
+  }, [dispatch, setPage]);
 
   return (
     <div className="relative flex min-w-0 flex-1">
       <main
         ref={scrollerRef}
-        className={`flex-1 canvas-bg select-none overflow-auto ${cursorClass}`}
+        className={`flex-1 canvas-bg select-none overflow-auto ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
         onMouseDown={handleBackgroundMouseDown}
         onMouseMove={handleBackgroundMouseMove}
         onMouseUp={handleBackgroundMouseUp}
-        onMouseLeave={handleBackgroundMouseLeave}
+        onMouseLeave={() => {
+          if (panState.current?.moved) setIsPanning(false);
+          panState.current = null;
+        }}
         onWheel={handleWheel}
-        onDragEnd={endDrag}
       >
-      <div
-        className="sticky top-0 z-10 flex cursor-default items-center gap-0.5 border-b border-white/10 bg-[#1e1e1e]/90 px-8 pt-4 pb-0 backdrop-blur-sm"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {config.pages.map((page, idx) => (
-          <button
-            key={idx}
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setPage(idx);
-            }}
-            className={[
-              'rounded-t px-3 py-1.5 text-[11px] font-medium transition',
-              idx === pageIndex
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/60',
-            ].join(' ')}
-          >
-            {page.name}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            handleAddPage();
-          }}
-          className="rounded-t px-2 py-1.5 text-[11px] text-white/30 transition hover:bg-white/5 hover:text-white/50"
-        >
-          +
-        </button>
-      </div>
-
-      <div className="p-8 pb-[50vh]" style={{ minWidth: 'max-content' }}>
         <div
-          className="mx-auto cursor-default overflow-hidden rounded-lg bg-white shadow-2xl shadow-black/40"
-          style={{
-            width: CANVAS_WIDTH,
-            minHeight: 600,
-            // Non-standard `zoom` is used instead of `transform: scale` because
-            // it also affects layout, so scrollbar extents stay correct without
-            // manual size compensation.
-            zoom,
-          }}
+          className="sticky left-0 top-0 z-10 flex cursor-default items-center gap-0.5 border-b border-white/10 bg-[#1e1e1e]/90 px-8 pb-0 pt-4 backdrop-blur-sm"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div
-            className="min-h-full bg-white text-slate-900"
-            style={buildThemeVars(config.theme)}
+          {config.pages.map((p, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => setPage(idx)}
+              className={[
+                'rounded-t px-3 py-1.5 text-[11px] font-medium transition',
+                idx === pageIndex
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/60',
+              ].join(' ')}
+            >
+              {p.name}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={handleAddPage}
+            className="rounded-t px-2 py-1.5 text-[11px] text-white/30 transition hover:bg-white/5 hover:text-white/50"
           >
-            <ErrorBoundary resetKey={pageIndex} label="Preview failed to render">
-              <PreviewTree
-                nodes={currentPage?.sections ?? []}
-                selectedPath={selection?.path ?? null}
-                onSelect={handleSelect}
-                onInsertAtIndex={handleInsertAtIndex}
-                onInsertChildAtPath={handleInsertChildAtPath}
-                onDrop={handleDrop}
-                dragFrom={dragFrom}
-                setDragFrom={(path) => (path ? startDrag(path) : endDrag())}
-                dropTarget={dropTarget}
-                setDropTarget={setDropTarget}
+            +
+          </button>
+          <span className="ml-auto pb-1.5 font-mono text-[10px] text-white/25">
+            {VIEWPORT.width} × {VIEWPORT.height} desktop
+          </span>
+        </div>
+
+        <div className="flex w-max min-w-full justify-center" style={{ padding: PAD, paddingBottom: "40vh" }}>
+          <div
+            ref={sizerRef}
+            className="relative shrink-0 cursor-default shadow-2xl shadow-black/40"
+            style={{ width: VIEWPORT.width * zoom, height: pageHeight * zoom }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div
+              className="absolute left-0 top-0"
+              style={{ width: VIEWPORT.width, height: pageHeight, transform: `scale(${zoom})`, transformOrigin: '0 0' }}
+            >
+              <ErrorBoundary resetKey={pageIndex} label="Canvas failed to render">
+                {page && (
+                  <CanvasFrame
+                    config={rendered}
+                    page={page}
+                    width={VIEWPORT.width}
+                    viewportHeight={VIEWPORT.height}
+                    onHeight={setPageHeight}
+                    onLayout={notifyLayout}
+                    onPick={handlePick}
+                    onHover={setHoverKey}
+                    onWheel={handlePageWheel}
+                    onDocument={setDoc}
+                  />
+                )}
+              </ErrorBoundary>
+              <Overlay
+                doc={doc}
+                zoom={zoom}
+                selectedKey={selectedKey}
+                selectedLabel={selectedNode ? labelFor(selectedNode) : ''}
+                hoverKey={hoverKey}
               />
-            </ErrorBoundary>
+            </div>
           </div>
         </div>
-      </div>
       </main>
 
-      <ZoomWidget
-        zoom={zoom}
-        onZoomIn={zoomIn}
-        onZoomOut={zoomOut}
-        onReset={resetZoom}
-      />
+      {errors.length > 0 && (
+        <div className="absolute left-4 right-4 top-14 z-20 rounded border border-red-500/30 bg-[#2a1d1d]/95 px-3 py-2 text-[11px] text-red-300 shadow-lg">
+          <div className="mb-1 font-semibold">The document doesn't validate, so the canvas shows the last valid version:</div>
+          {errors.slice(0, 4).map((e) => (
+            <div key={e} className="font-mono text-[10px] text-red-300/80">{e}</div>
+          ))}
+        </div>
+      )}
+
+      <ZoomWidget zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onFit={requestFit} />
     </div>
   );
 }
 
-interface ZoomWidgetProps {
-  zoom: number;
-  onZoomIn: () => void;
-  onZoomOut: () => void;
-  onReset: () => void;
-}
-
-function ZoomWidget({ zoom, onZoomIn, onZoomOut, onReset }: ZoomWidgetProps) {
+function ZoomWidget({ zoom, onZoomIn, onZoomOut, onFit }: { zoom: number; onZoomIn: () => void; onZoomOut: () => void; onFit: () => void }) {
+  const btn =
+    'pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-[13px] text-white/60 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent';
   return (
     <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-full border border-white/10 bg-[#2c2c2c]/90 p-0.5 shadow-lg shadow-black/30 backdrop-blur-sm">
-      <button
-        type="button"
-        title="Zoom out (Ctrl -)"
-        onClick={onZoomOut}
-        disabled={zoom <= ZOOM_MIN}
-        className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-[13px] text-white/60 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-      >
+      <button type="button" title="Zoom out (Ctrl -)" onClick={onZoomOut} disabled={zoom <= ZOOM_MIN} className={btn}>
         &#x2212;
       </button>
       <button
         type="button"
-        title="Reset zoom (Ctrl 0)"
-        onClick={onReset}
-        className="pointer-events-auto min-w-[48px] rounded-full px-2 py-0.5 text-center font-mono text-[11px] text-white/70 tabular-nums transition hover:bg-white/10 hover:text-white"
+        title="Zoom to fit (Shift 1)"
+        onClick={onFit}
+        className="pointer-events-auto min-w-[48px] rounded-full px-2 py-0.5 text-center font-mono text-[11px] tabular-nums text-white/70 transition hover:bg-white/10 hover:text-white"
       >
         {Math.round(zoom * 100)}%
       </button>
-      <button
-        type="button"
-        title="Zoom in (Ctrl +)"
-        onClick={onZoomIn}
-        disabled={zoom >= ZOOM_MAX}
-        className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-[13px] text-white/60 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-      >
+      <button type="button" title="Zoom in (Ctrl +)" onClick={onZoomIn} disabled={zoom >= ZOOM_MAX} className={btn}>
         +
       </button>
     </div>
@@ -307,22 +325,4 @@ interface PanState {
   startScrollLeft: number;
   startScrollTop: number;
   moved: boolean;
-}
-
-/**
- * Convert `theme.colors` and `theme.fonts` into CSS custom properties injected
- * on the preview root. Color keys become `--nc-<key>`, font keys become
- * `--nc-font-<key>`. Blocks can reference these in className with Tailwind's
- * arbitrary value syntax, e.g. `bg-[--nc-primary]` or `text-[--nc-primary]`.
- */
-function buildThemeVars(theme: NeucliTheme | undefined): React.CSSProperties {
-  if (!theme) return {};
-  const vars: Record<string, string> = {};
-  for (const [k, v] of Object.entries(theme.colors ?? {})) {
-    if (typeof v === 'string') vars[`--nc-${k}`] = v;
-  }
-  for (const [k, v] of Object.entries(theme.fonts ?? {})) {
-    if (typeof v === 'string') vars[`--nc-font-${k}`] = v;
-  }
-  return vars as React.CSSProperties;
 }

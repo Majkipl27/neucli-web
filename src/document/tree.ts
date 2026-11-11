@@ -1,178 +1,158 @@
 /**
- * Pure, immutable operations on a node tree.
+ * Pure, immutable operations on a page's node tree.
  *
- * All functions take a node list (either a page's `sections` or a node's
- * `children`) and return a new list. Nothing in this module is React-aware
- * or touches NeucliConfig.
+ * See `Path` in ./types for addressing. Every function returns new arrays and
+ * leaves its input untouched.
  */
 
-import type { NeucliNode, Path } from './types';
+import type { Node, Path } from './types';
 
-export function cloneNode(node: NeucliNode): NeucliNode {
+type Children = { children?: Node[]; slots?: Record<string, Node[]> };
+
+export function cloneNode<T>(node: T): T {
   return JSON.parse(JSON.stringify(node));
 }
 
-/** Returns the node at `path`, or null if the path is invalid. */
-export function getAt(nodes: NeucliNode[], path: Path): NeucliNode | null {
-  if (path.length === 0) return null;
-  let list = nodes;
-  let current: NeucliNode | undefined;
-  for (let i = 0; i < path.length; i++) {
-    current = list[path[i]];
+/** The node list at a list path, or null when the path doesn't lead anywhere. */
+export function getList(nodes: Node[], listPath: Path): Node[] | null {
+  let list: Node[] = nodes;
+  let current: Node | null = null;
+  for (const seg of listPath) {
+    if (typeof seg === 'string') {
+      if (!current) return null;
+      list = (current as Children).slots?.[seg] ?? [];
+      current = null;
+      continue;
+    }
+    current = list[seg] ?? null;
     if (!current) return null;
-    list = current.children ?? [];
+    list = (current as Children).children ?? [];
   }
-  return current ?? null;
+  return list;
 }
 
-/**
- * Returns a new node list with the node at `path` replaced by `updater(node)`.
- * If the path is invalid the input is returned unchanged.
- */
-export function updateAt(
-  nodes: NeucliNode[],
-  path: Path,
-  updater: (node: NeucliNode) => NeucliNode,
-): NeucliNode[] {
-  if (path.length === 0) return nodes;
-  const [idx, ...rest] = path;
-  if (idx < 0 || idx >= nodes.length) return nodes;
-
-  if (rest.length === 0) {
-    return nodes.map((n, i) => (i === idx ? updater(n) : n));
-  }
-
-  return nodes.map((n, i) => {
-    if (i !== idx) return n;
-    const children = n.children ?? [];
-    return { ...n, children: updateAt(children, rest, updater) };
-  });
-}
-
-/**
- * Returns a new list with `node` inserted at `path`. The last element of the
- * path is the insertion index in its parent's child list; preceding elements
- * are the parent path. Out-of-range indices are clamped.
- */
-export function insertAt(nodes: NeucliNode[], path: Path, node: NeucliNode): NeucliNode[] {
-  if (path.length === 0) return nodes;
-  const parentPath = path.slice(0, -1);
-  const index = path[path.length - 1];
-  const toInsert = normaliseForInsert(node);
-
-  if (parentPath.length === 0) {
-    const out = [...nodes];
-    out.splice(clamp(index, 0, out.length), 0, toInsert);
-    return out;
-  }
-
-  return updateAt(nodes, parentPath, (parent) => {
-    const children = parent.children ? [...parent.children] : [];
-    children.splice(clamp(index, 0, children.length), 0, toInsert);
-    return { ...parent, children };
-  });
-}
-
-export function removeAt(nodes: NeucliNode[], path: Path): NeucliNode[] {
-  if (path.length === 0) return nodes;
-  const parentPath = path.slice(0, -1);
-  const index = path[path.length - 1];
-
-  if (parentPath.length === 0) {
-    if (index < 0 || index >= nodes.length) return nodes;
-    return nodes.filter((_, i) => i !== index);
-  }
-
-  return updateAt(nodes, parentPath, (parent) => {
-    const children = (parent.children ?? []).filter((_, i) => i !== index);
-    return { ...parent, children };
-  });
-}
-
-/**
- * Move a node from `from` to `to`. Adjusts for same-parent index shifting
- * automatically. Returns the new list and the resulting path of the moved
- * node, or null if the source path is invalid.
- */
-export function moveNode(
-  nodes: NeucliNode[],
-  from: Path,
-  to: Path,
-): { nodes: NeucliNode[]; newPath: Path } | null {
-  if (from.length === 0 || to.length === 0) return null;
-  const node = getAt(nodes, from);
-  if (!node) return null;
-
-  const fromParent = from.slice(0, -1);
-  const toParent = to.slice(0, -1);
-  const fromIdx = from[from.length - 1];
-  const toIdx = to[to.length - 1];
-
-  const sameParent =
-    fromParent.length === toParent.length &&
-    fromParent.every((v, i) => v === toParent[i]);
-
-  const adjustedIdx = sameParent && fromIdx < toIdx ? toIdx - 1 : toIdx;
-  const removed = removeAt(nodes, from);
-  const inserted = insertAt(removed, [...toParent, adjustedIdx], cloneNode(node));
-  return { nodes: inserted, newPath: [...toParent, adjustedIdx] };
-}
-
-/** Swap the node at `path` with its neighbour in `direction`, if any. */
-export function swapSibling(
-  nodes: NeucliNode[],
-  path: Path,
-  direction: 'up' | 'down',
-): { nodes: NeucliNode[]; newPath: Path } | null {
+export function getAt(nodes: Node[], path: Path): Node | null {
   if (path.length === 0) return null;
-  const parentPath = path.slice(0, -1);
   const idx = path[path.length - 1];
-  const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (typeof idx !== 'number') return null;
+  return getList(nodes, path.slice(0, -1))?.[idx] ?? null;
+}
 
-  const siblings =
-    parentPath.length === 0 ? nodes : getAt(nodes, parentPath)?.children ?? null;
-  if (!siblings || newIdx < 0 || newIdx >= siblings.length) return null;
-
-  if (parentPath.length === 0) {
-    const out = [...nodes];
-    [out[idx], out[newIdx]] = [out[newIdx], out[idx]];
-    return { nodes: out, newPath: [...parentPath, newIdx] };
+/** Replace the list at `listPath` with `fn(list)`. Unknown paths return `nodes` unchanged. */
+export function updateList(nodes: Node[], listPath: Path, fn: (list: Node[]) => Node[]): Node[] {
+  if (listPath.length === 0) return fn(nodes);
+  const [head, ...rest] = listPath;
+  if (typeof head !== 'number' || !nodes[head]) return nodes;
+  const node = nodes[head] as Node & Children;
+  let next: Node;
+  if (rest.length > 0 && typeof rest[0] === 'string') {
+    const slot = rest[0];
+    const slots = { ...(node.slots ?? {}) };
+    slots[slot] = updateList(slots[slot] ?? [], rest.slice(1), fn);
+    if (slots[slot].length === 0) delete slots[slot];
+    next = { ...node, slots } as Node;
+    if (Object.keys(slots).length === 0) delete (next as Children).slots;
+  } else {
+    const children = updateList(node.children ?? [], rest, fn);
+    next = { ...node, children } as Node;
+    if (children.length === 0) delete (next as Children).children;
   }
+  return nodes.map((n, i) => (i === head ? next : n));
+}
 
-  const out = updateAt(nodes, parentPath, (parent) => {
-    const children = [...(parent.children ?? [])];
-    [children[idx], children[newIdx]] = [children[newIdx], children[idx]];
-    return { ...parent, children };
+export function updateAt(nodes: Node[], path: Path, fn: (node: Node) => Node): Node[] {
+  const idx = path[path.length - 1];
+  if (typeof idx !== 'number') return nodes;
+  return updateList(nodes, path.slice(0, -1), (list) =>
+    idx >= 0 && idx < list.length ? list.map((n, i) => (i === idx ? fn(n) : n)) : list,
+  );
+}
+
+export function insertAt(nodes: Node[], path: Path, node: Node): Node[] {
+  const idx = path[path.length - 1];
+  if (typeof idx !== 'number') return nodes;
+  return updateList(nodes, path.slice(0, -1), (list) => {
+    const out = [...list];
+    out.splice(clamp(idx, 0, out.length), 0, node);
+    return out;
   });
-  return { nodes: out, newPath: [...parentPath, newIdx] };
+}
+
+export function removeAt(nodes: Node[], path: Path): Node[] {
+  const idx = path[path.length - 1];
+  if (typeof idx !== 'number') return nodes;
+  return updateList(nodes, path.slice(0, -1), (list) => list.filter((_, i) => i !== idx));
+}
+
+/**
+ * Move a node from `from` to `to` (a path whose last segment is the index in
+ * the destination list, counted before removal). Returns null for invalid
+ * moves, including moving a node into itself.
+ */
+export function moveNode(nodes: Node[], from: Path, to: Path): { nodes: Node[]; newPath: Path } | null {
+  const node = getAt(nodes, from);
+  if (!node || to.length === 0) return null;
+  const toList = to.slice(0, -1);
+  if (isAncestorOrSelf(from, toList)) return null;
+  const fromList = from.slice(0, -1);
+  const fromIdx = from[from.length - 1] as number;
+  let toIdx = to[to.length - 1] as number;
+  if (pathEquals(fromList, toList) && fromIdx < toIdx) toIdx -= 1;
+
+  // Removing `from` shifts later siblings of any ancestor on the destination path.
+  const adjustedList = toList.map((seg, i) =>
+    i === fromList.length && pathEquals(fromList, toList.slice(0, i)) && typeof seg === 'number' && seg > fromIdx
+      ? seg - 1
+      : seg,
+  );
+  const removed = removeAt(nodes, from);
+  const newPath = [...adjustedList, toIdx];
+  return { nodes: insertAt(removed, newPath, node), newPath };
+}
+
+export function swapSibling(nodes: Node[], path: Path, direction: 'up' | 'down'): { nodes: Node[]; newPath: Path } | null {
+  const idx = path[path.length - 1];
+  if (typeof idx !== 'number') return null;
+  const listPath = path.slice(0, -1);
+  const list = getList(nodes, listPath);
+  const next = direction === 'up' ? idx - 1 : idx + 1;
+  if (!list || next < 0 || next >= list.length) return null;
+  const out = updateList(nodes, listPath, (l) => {
+    const copy = [...l];
+    [copy[idx], copy[next]] = [copy[next], copy[idx]];
+    return copy;
+  });
+  return { nodes: out, newPath: [...listPath, next] };
 }
 
 export function pathEquals(a: Path | null | undefined, b: Path | null | undefined): boolean {
   if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+  return a.every((v, i) => v === b[i]);
 }
 
-/** True if `ancestor` is a strict prefix of `descendant`. */
-export function isAncestorOf(ancestor: Path, descendant: Path): boolean {
-  if (ancestor.length >= descendant.length) return false;
-  for (let i = 0; i < ancestor.length; i++) {
-    if (ancestor[i] !== descendant[i]) return false;
-  }
-  return true;
+/** True when `ancestor` is `path` itself or one of its ancestors. */
+export function isAncestorOrSelf(ancestor: Path, path: Path): boolean {
+  if (ancestor.length > path.length) return false;
+  return ancestor.every((v, i) => v === path[i]);
+}
+
+/** Stable string key for a path, used to tag rendered elements. */
+export function pathKey(path: Path): string {
+  return path.join('.');
+}
+
+export function parsePathKey(key: string): Path {
+  if (key === '') return [];
+  return key.split('.').map((s) => (/^\d+$/.test(s) ? Number(s) : s));
+}
+
+/** Path of the closest node containing `path` (drops the index, and a slot name if present). */
+export function parentPath(path: Path): Path {
+  const list = path.slice(0, -1);
+  if (typeof list[list.length - 1] === 'string') list.pop();
+  return list;
 }
 
 function clamp(n: number, min: number, max: number): number {
-  if (n < min) return min;
-  if (n > max) return max;
-  return n;
-}
-
-/** Drop empty `children: []` so YAML output stays clean. */
-function normaliseForInsert(node: NeucliNode): NeucliNode {
-  if (node.children && node.children.length === 0) {
-    const { children: _drop, ...rest } = node;
-    return rest;
-  }
-  return node;
+  return Math.min(max, Math.max(min, n));
 }

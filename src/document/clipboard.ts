@@ -1,37 +1,16 @@
 /**
- * In-memory clipboard for node subtrees.
- *
- * Lives outside the zustand stores because it needs no reactivity: copy/paste
- * is driven by keyboard events, and only the paste action reads it back.
- * Stored as a JSON string so callers cannot accidentally mutate the source
- * node via the returned reference.
+ * In-memory clipboard for node subtrees. Stored as JSON so the source node
+ * can't be mutated through the returned value.
  */
 
-import type { NeucliNode } from './types';
+import type { Node } from './types';
 
 let payload: string | null = null;
 
-export function setClipboardNode(node: NeucliNode): void {
-  try {
-    payload = JSON.stringify(node);
-  } catch {
-    payload = null;
-  }
+export function setClipboardNode(node: Node): void {
+  payload = JSON.stringify(node);
 }
 
-export function getClipboardNode(): NeucliNode | null {
-  if (!payload) return null;
-  try {
-    return JSON.parse(payload) as NeucliNode;
-  } catch {
-    return null;
-  }
-}
-
-export function hasClipboardNode(): boolean {
-  return payload !== null;
-}
-
-export function clearClipboard(): void {
-  payload = null;
+export function getClipboardNode(): Node | null {
+  return payload ? (JSON.parse(payload) as Node) : null;
 }

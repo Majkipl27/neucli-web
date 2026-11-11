@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import type { NeucliPage } from '../document/types';
+import type { Page as NeucliPage } from '../document/types';
 import { useDocumentStore } from '../store/useDocument';
 import { useSelectionStore } from '../store/useSelection';
 import { useUIStore } from '../store/useUI';
@@ -9,13 +9,18 @@ import {
   duplicatePage as cmdDuplicatePage,
   updatePage as cmdUpdatePage,
   setMeta as cmdSetMeta,
-  setThemeColor as cmdSetThemeColor,
-  deleteThemeColor as cmdDeleteThemeColor,
-  renameThemeColor as cmdRenameThemeColor,
-  setThemeFont as cmdSetThemeFont,
-  deleteThemeFont as cmdDeleteThemeFont,
-  renameThemeFont as cmdRenameThemeFont,
+  setToken,
+  deleteToken,
+  renameToken,
 } from '../document/commands';
+import type { Config } from '../document/types';
+
+const cmdSetThemeColor = (c: Config, k: string, v: string) => setToken(c, 'colors', k, v);
+const cmdDeleteThemeColor = (c: Config, k: string) => deleteToken(c, 'colors', k);
+const cmdRenameThemeColor = (c: Config, a: string, b: string) => renameToken(c, 'colors', a, b);
+const cmdSetThemeFont = (c: Config, k: string, v: string) => setToken(c, 'fonts', k, v);
+const cmdDeleteThemeFont = (c: Config, k: string) => deleteToken(c, 'fonts', k);
+const cmdRenameThemeFont = (c: Config, a: string, b: string) => renameToken(c, 'fonts', a, b);
 import LayerTree from './LayerTree';
 
 // ─────────────────────────────────────────────
@@ -212,7 +217,7 @@ function PageSettingsInline({
       <input className={inp} value={page.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="Name" />
       <input className={inp} value={page.path} onChange={(e) => onChange({ path: e.target.value })} placeholder="/path" />
       <input className={inp} value={page.title ?? ''} onChange={(e) => onChange({ title: e.target.value })} placeholder="<title>" />
-      <input className={inp} value={page.meta?.description ?? ''} onChange={(e) => onChange({ meta: { ...page.meta, description: e.target.value } })} placeholder="Meta description" />
+      <input className={inp} value={page.description ?? ''} onChange={(e) => onChange({ description: e.target.value })} placeholder="Meta description" />
     </div>
   );
 }

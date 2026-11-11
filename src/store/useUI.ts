@@ -15,7 +15,7 @@ export interface DropTarget {
  * Preset zoom stops the +/- buttons and keyboard shortcut step through.
  * Wheel zoom uses continuous values, clamped to the same outer bounds.
  */
-export const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+export const ZOOM_STEPS = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4] as const;
 export const ZOOM_MIN = ZOOM_STEPS[0];
 export const ZOOM_MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
 
@@ -30,8 +30,12 @@ interface UIState {
   /** Which page's inline-edit form is open in the left sidebar. */
   editingPageIndex: number | null;
 
-  /** Global fallback block type used by "Add child" / "Add sibling" buttons. */
-  addType: string;
+  /** Path key of the page node under the pointer on the canvas. */
+  hoverKey: string | null;
+
+  /** Bumped to ask the canvas to zoom to fit / zoom to the selection. */
+  fitRequest: number;
+  focusRequest: number;
 
   /** Canvas zoom factor; 1 = 100%. */
   zoom: number;
@@ -45,7 +49,9 @@ interface UIState {
 
   setError: (error: string | null) => void;
   setEditingPageIndex: (index: number | null) => void;
-  setAddType: (type: string) => void;
+  setHoverKey: (key: string | null) => void;
+  requestFit: () => void;
+  requestFocus: () => void;
 
   setZoom: (zoom: number) => void;
   zoomIn: () => void;
@@ -75,7 +81,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   yamlOpen: false,
   error: null,
   editingPageIndex: null,
-  addType: 'section',
+  hoverKey: null,
+  fitRequest: 0,
+  focusRequest: 0,
   zoom: 1,
 
   startDrag: (path) => set({ dragFrom: path, dropTarget: null }),
@@ -87,7 +95,9 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   setError: (error) => set({ error }),
   setEditingPageIndex: (editingPageIndex) => set({ editingPageIndex }),
-  setAddType: (addType) => set({ addType }),
+  setHoverKey: (hoverKey) => set({ hoverKey }),
+  requestFit: () => set((s) => ({ fitRequest: s.fitRequest + 1 })),
+  requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
 
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   zoomIn: () => set({ zoom: nextStep(get().zoom, 1) }),
