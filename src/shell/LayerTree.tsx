@@ -16,6 +16,7 @@ function cls(...parts: (string | false | null | undefined)[]): string {
 export default function LayerTree() {
   const pageIndex = useSelectionStore((s) => s.pageIndex);
   const selection = useSelectionStore((s) => s.selection);
+  const paths = useSelectionStore((s) => s.paths);
   const select = useSelectionStore((s) => s.select);
 
   const dispatch = useDocumentStore((s) => s.dispatch);
@@ -45,19 +46,19 @@ export default function LayerTree() {
 
   return (
     <div className="py-0.5" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop} onDragEnd={endDrag}>
-      <NodeList nodes={nodes} listPath={[]} depth={0} selectedPath={selection?.path ?? null} />
+      <NodeList nodes={nodes} listPath={[]} depth={0} selected={paths.length ? paths : selection ? [selection.path] : []} />
     </div>
   );
 }
 
-function NodeList({ nodes, listPath, depth, selectedPath }: { nodes: Node[]; listPath: Path; depth: number; selectedPath: Path | null }) {
+function NodeList({ nodes, listPath, depth, selected }: { nodes: Node[]; listPath: Path; depth: number; selected: Path[] }) {
   const dragFrom = useUIStore((s) => s.dragFrom);
   return (
     <div>
       <DropZone listPath={listPath} index={0} active={!!dragFrom} />
       {nodes.map((node, idx) => (
         <React.Fragment key={idx}>
-          <TreeNode node={node} path={[...listPath, idx]} depth={depth} siblings={nodes.length} selectedPath={selectedPath} />
+          <TreeNode node={node} path={[...listPath, idx]} depth={depth} siblings={nodes.length} selectedPaths={selected} />
           <DropZone listPath={listPath} index={idx + 1} active={!!dragFrom} />
         </React.Fragment>
       ))}
@@ -83,9 +84,11 @@ function DropZone({ listPath, index, active }: { listPath: Path; index: number; 
   );
 }
 
-function TreeNode({ node, path, depth, siblings, selectedPath }: { node: Node; path: Path; depth: number; siblings: number; selectedPath: Path | null }) {
+function TreeNode({ node, path, depth, siblings, selectedPaths }: { node: Node; path: Path; depth: number; siblings: number; selectedPaths: Path[] }) {
   const pageIndex = useSelectionStore((s) => s.pageIndex);
   const select = useSelectionStore((s) => s.select);
+  const toggle = useSelectionStore((s) => s.toggle);
+  const primary = useSelectionStore((s) => s.selection?.path ?? null);
   const dispatch = useDocumentStore((s) => s.dispatch);
   const config = useDocumentStore((s) => s.config);
   const dragFrom = useUIStore((s) => s.dragFrom);
@@ -94,7 +97,8 @@ function TreeNode({ node, path, depth, siblings, selectedPath }: { node: Node; p
   const setHoverKey = useUIStore((s) => s.setHoverKey);
 
   const key = pathKey(path);
-  const selected = pathEquals(path, selectedPath);
+  const selected = selectedPaths.some((p) => pathEquals(p, path));
+  const isPrimary = pathEquals(path, primary);
   const index = path[path.length - 1] as number;
   const children = 'children' in node ? node.children ?? [] : [];
   const slots = isInstance(node) ? Object.entries(node.slots ?? {}) : [];
@@ -126,7 +130,7 @@ function TreeNode({ node, path, depth, siblings, selectedPath }: { node: Node; p
       >
         <button
           type="button"
-          onClick={() => select({ pageIndex, path })}
+          onClick={(e) => (e.shiftKey ? toggle(path) : select({ pageIndex, path }))}
           className={cls(
             'flex w-full items-center gap-1 rounded px-2 py-[5px] text-left transition-colors',
             selected ? 'bg-indigo-500/20 text-white' : hoverKey === key ? 'bg-white/5 text-white/80' : 'text-white/60 hover:bg-white/5 hover:text-white/80',
@@ -138,7 +142,7 @@ function TreeNode({ node, path, depth, siblings, selectedPath }: { node: Node; p
           {children.length > 0 && <span className="text-[10px] text-white/30">{children.length}</span>}
         </button>
 
-        {selected && (
+        {isPrimary && selectedPaths.length === 1 && (
           <div className="absolute right-1 top-0.5 flex items-center gap-0.5">
             {index > 0 && (
               <button type="button" onClick={() => move('up')} className="rounded p-0.5 text-[10px] text-white/30 hover:bg-white/10 hover:text-white/70" title="Move up">
@@ -155,14 +159,14 @@ function TreeNode({ node, path, depth, siblings, selectedPath }: { node: Node; p
       </div>
 
       {(children.length > 0 || (canNest && dragFrom)) && (
-        <NodeList nodes={children} listPath={path} depth={depth + 1} selectedPath={selectedPath} />
+        <NodeList nodes={children} listPath={path} depth={depth + 1} selected={selectedPaths} />
       )}
       {slots.map(([name, list]) => (
         <div key={name}>
           <div className="py-[3px] text-[10px] uppercase tracking-wider text-white/25" style={{ paddingLeft: 8 + (depth + 1) * 14 + 20 }}>
             {name}
           </div>
-          <NodeList nodes={list} listPath={[...path, name]} depth={depth + 1} selectedPath={selectedPath} />
+          <NodeList nodes={list} listPath={[...path, name]} depth={depth + 1} selected={selectedPaths} />
         </div>
       ))}
     </div>

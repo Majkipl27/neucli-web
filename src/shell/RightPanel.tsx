@@ -15,6 +15,8 @@ import {
   updatePage as cmdUpdatePage,
 } from '../document/commands';
 import ErrorBoundary from './ErrorBoundary';
+import { canvasDocument } from '../canvas/registry';
+import { elementFor, rectOf } from '../canvas/interaction';
 
 /**
  * Minimal properties panel for now: content fields per node type, and the
@@ -122,6 +124,13 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
           {def && <InstanceProps node={any} props={(def.props ?? {}) as Record<string, PropDef | string>} selection={selection} />}
         </Section>
 
+        {node.type !== 'slot' && (
+          <Section title="Size">
+            <SizeRow axis="width" label="W" node={any} selection={selection} />
+            <SizeRow axis="height" label="H" node={any} selection={selection} />
+          </Section>
+        )}
+
         <Section title="Layer">
           <Field label="Layer name" value={'name' in any ? any.name ?? '' : ''} placeholder={labelFor({ ...any, name: undefined } as Node)} onChange={optional('name')} />
           <Field label="HTML id" value={'id' in any ? any.id ?? '' : ''} onChange={optional('id')} />
@@ -133,6 +142,72 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
         </Section>
       </div>
     </>
+  );
+}
+
+type SizeMode = 'fixed' | 'hug' | 'fill';
+
+/**
+ * Figma's sizing modes for one axis. Fixed writes a px number (starting from
+ * the rendered size), Hug and Fill write `hug` / `fill`. Unset shows no mode:
+ * the element keeps its natural size from the layout.
+ */
+function SizeRow({ axis, label, node, selection }: { axis: 'width' | 'height'; label: string; node: Node; selection: Selection }) {
+  const dispatch = useDocumentStore((s) => s.dispatch);
+  const value = (node as unknown as Record<string, unknown>)[axis];
+  const mode: SizeMode | null = value === 'hug' ? 'hug' : value === 'fill' ? 'fill' : value === undefined ? null : 'fixed';
+  const set = (v: unknown, coalesce = false) =>
+    dispatch((c) => cmdPatchNode(c, selection, { [axis]: v }), coalesce ? { mode: 'coalesce', group: `${axis}:${pathKey(selection.path)}` } : undefined);
+
+  const measured = () => {
+    const r = rectOf(elementFor(canvasDocument(), selection.path));
+    return r ? Math.round(axis === 'width' ? r.w : r.h) : 100;
+  };
+
+  const button = (m: SizeMode, text: string) => (
+    <button
+      type="button"
+      onClick={() => {
+        if (m === mode) return;
+        set(m === 'fixed' ? measured() : m);
+      }}
+      className={`flex-1 rounded px-1.5 py-1 text-[11px] transition ${
+        mode === m ? 'bg-indigo-500/25 text-indigo-200' : 'text-white/45 hover:bg-white/5 hover:text-white/70'
+      }`}
+    >
+      {text}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-3 text-[11px] text-white/40">{label}</span>
+      <input
+        className={`${inputCls.replace("w-full", "")} w-[64px] shrink-0 font-mono text-[11px]`}
+        value={typeof value === 'number' || (typeof value === 'string' && mode === 'fixed') ? String(value) : ''}
+        placeholder={mode === 'hug' ? 'Hug' : mode === 'fill' ? 'Fill' : 'Auto'}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          if (raw === '') return set(undefined, true);
+          const n = Number(raw);
+          set(Number.isFinite(n) && n > 0 ? Math.round(n) : raw, true);
+        }}
+      />
+      <div className="flex flex-1 gap-0.5 rounded border border-white/10 p-0.5">
+        {button('fixed', 'Fixed')}
+        {button('hug', 'Hug')}
+        {button('fill', 'Fill')}
+      </div>
+      <button
+        type="button"
+        title="Unset (natural size)"
+        onClick={() => set(undefined)}
+        disabled={mode === null}
+        className="rounded px-1 text-[12px] text-white/30 transition hover:text-white/70 disabled:opacity-0"
+      >
+        ×
+      </button>
+    </div>
   );
 }
 

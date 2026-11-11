@@ -12,7 +12,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { googleFontsUrl } from 'neucli/core';
 import type { Config, Page } from 'neucli/core';
-import { PageView, NID_ATTR } from './render';
+import { PageView } from './render';
 import { classesIn, compilerFor, pinViewportUnits } from './tailwind';
 
 const SRC_DOC = '<!doctype html><html><head><meta charset="utf-8"><style id="nc-tw"></style></head><body><div id="root"></div></body></html>';
@@ -25,22 +25,40 @@ export interface CanvasFrameProps {
   onHeight: (height: number) => void;
   /** Something moved: content, CSS or fonts. Re-measure overlays. */
   onLayout: () => void;
-  onPick: (nid: string | null) => void;
-  onHover: (nid: string | null) => void;
+  /** Mouse input over the page, in page px. The canvas decides what it means. */
+  onPointer: (event: CanvasPointer) => void;
+  /** Bumped to rebuild the page's DOM (after editing text in place). */
+  renderKey: number;
   /** Wheel over the page, with coordinates in page pixels. */
   onWheel: (event: WheelEvent) => void;
   onDocument: (doc: Document | null) => void;
 }
 
-/** Closest page node under an event target. Elements come from the iframe's realm, so no `instanceof Element`. */
-function nidAt(target: EventTarget | null): string | null {
-  const node = target as (Node & Partial<Element>) | null;
-  const el = node && typeof node.closest === 'function' ? (node as Element) : node?.parentElement ?? null;
-  return el?.closest(`[${NID_ATTR}]`)?.getAttribute(NID_ATTR) ?? null;
+export interface CanvasPointer {
+  type: 'down' | 'move' | 'up' | 'dblclick' | 'leave';
+  x: number;
+  y: number;
+  button: number;
+  shift: boolean;
+  /** Cmd on macOS, Ctrl elsewhere. */
+  mod: boolean;
+  alt: boolean;
+  event: MouseEvent;
+}
+
+/** Is the event inside text being edited in place? Elements come from the iframe's realm, so no `instanceof`. */
+function inEditable(target: EventTarget | null): boolean {
+  const node = target as (Node & Partial<HTMLElement>) | null;
+  const el = node && typeof node.closest === 'function' ? (node as HTMLElement) : node?.parentElement ?? null;
+  return !!el?.closest('[contenteditable="plaintext-only"], [contenteditable="true"]');
+}
+
+function pointer(type: CanvasPointer['type'], e: MouseEvent): CanvasPointer {
+  return { type, x: e.clientX, y: e.clientY, button: e.button, shift: e.shiftKey, mod: e.metaKey || e.ctrlKey, alt: e.altKey, event: e };
 }
 
 function CanvasFrame(props: CanvasFrameProps) {
-  const { config, page, width, viewportHeight } = props;
+  const { config, page, width, viewportHeight, renderKey } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [doc, setDoc] = useState<Document | null>(null);
   const [height, setHeight] = useState(viewportHeight);
@@ -70,29 +88,33 @@ function CanvasFrame(props: CanvasFrameProps) {
   useEffect(() => {
     if (!doc) return;
     const win = doc.defaultView!;
-    let hovered: string | null = null;
-    const stop = (e: Event) => e.preventDefault();
+    const stop = (e: Event) => {
+      if (!inEditable(e.target)) e.preventDefault();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (inEditable(e.target)) return;
+      e.preventDefault();
+      cb.current.onPointer(pointer('down', e));
+    };
     const onClick = (e: MouseEvent) => {
+      if (inEditable(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
-      cb.current.onPick(nidAt(e.target));
     };
-    const onMove = (e: MouseEvent) => {
-      const nid = nidAt(e.target);
-      if (nid !== hovered) {
-        hovered = nid;
-        cb.current.onHover(nid);
-      }
+    const onDbl = (e: MouseEvent) => {
+      if (inEditable(e.target)) return;
+      e.preventDefault();
+      cb.current.onPointer(pointer('dblclick', e));
     };
-    const onLeave = () => {
-      hovered = null;
-      cb.current.onHover(null);
-    };
+    const onMove = (e: MouseEvent) => cb.current.onPointer(pointer('move', e));
+    const onUp = (e: MouseEvent) => cb.current.onPointer(pointer('up', e));
+    const onLeave = (e: MouseEvent) => cb.current.onPointer(pointer('leave', e));
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       cb.current.onWheel(e);
     };
     const onKey = (e: KeyboardEvent) => {
+      if (inEditable(e.target)) return;
       const forwarded = new KeyboardEvent(e.type, {
         key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey,
         repeat: e.repeat, bubbles: true, cancelable: true,
@@ -100,24 +122,26 @@ function CanvasFrame(props: CanvasFrameProps) {
       window.dispatchEvent(forwarded);
       if (forwarded.defaultPrevented) e.preventDefault();
     };
-    doc.addEventListener('mousedown', stop, true);
+    doc.addEventListener('mousedown', onDown, true);
     doc.addEventListener('click', onClick, true);
     doc.addEventListener('auxclick', stop, true);
-    doc.addEventListener('dblclick', stop, true);
+    doc.addEventListener('dblclick', onDbl, true);
     doc.addEventListener('submit', stop, true);
     doc.addEventListener('dragstart', stop, true);
     doc.addEventListener('mousemove', onMove);
+    doc.addEventListener('mouseup', onUp);
     doc.documentElement.addEventListener('mouseleave', onLeave);
     win.addEventListener('wheel', onWheel, { passive: false });
     win.addEventListener('keydown', onKey);
     return () => {
-      doc.removeEventListener('mousedown', stop, true);
+      doc.removeEventListener('mousedown', onDown, true);
       doc.removeEventListener('click', onClick, true);
       doc.removeEventListener('auxclick', stop, true);
-      doc.removeEventListener('dblclick', stop, true);
+      doc.removeEventListener('dblclick', onDbl, true);
       doc.removeEventListener('submit', stop, true);
       doc.removeEventListener('dragstart', stop, true);
       doc.removeEventListener('mousemove', onMove);
+      doc.removeEventListener('mouseup', onUp);
       doc.documentElement.removeEventListener('mouseleave', onLeave);
       win.removeEventListener('wheel', onWheel);
       win.removeEventListener('keydown', onKey);
@@ -164,7 +188,7 @@ function CanvasFrame(props: CanvasFrameProps) {
     return () => {
       cancelled = true;
     };
-  }, [doc, config, page, theme, viewportHeight]);
+  }, [doc, config, page, theme, viewportHeight, renderKey]);
 
   // Grow the iframe to the page height; shrink back when content shrinks.
   useEffect(() => {
@@ -193,7 +217,7 @@ function CanvasFrame(props: CanvasFrameProps) {
         scrolling="no"
         style={{ width, height, border: 0, display: 'block', background: 'white' }}
       />
-      {doc && createPortal(<PageView config={config} page={page} />, doc.getElementById('root')!)}
+      {doc && createPortal(<PageView key={renderKey} config={config} page={page} />, doc.getElementById('root')!)}
     </>
   );
 }

@@ -4,11 +4,14 @@ import { useSelectionStore } from '../store/useSelection';
 import { useUIStore, ZOOM_MAX, ZOOM_MIN } from '../store/useUI';
 import { useValidated } from '../store/useValidated';
 import { addPage as cmdAddPage } from '../document/commands';
-import { getAt, parsePathKey, pathKey } from '../document/tree';
+import { getAt, pathKey } from '../document/tree';
 import { labelFor } from '../document/palette';
 import CanvasFrame from '../canvas/CanvasFrame';
 import Overlay, { measure } from '../canvas/Overlay';
 import { notifyLayout } from '../canvas/layoutBus';
+import { useCanvasInteractions } from '../canvas/useCanvasInteractions';
+import { setCanvasDocument } from '../canvas/registry';
+import type { Node } from '../document/types';
 import ErrorBoundary from './ErrorBoundary';
 
 /** Simulated desktop viewport. Breakpoints in the page see this width. */
@@ -33,6 +36,7 @@ export default function Canvas() {
 
   const pageIndex = useSelectionStore((s) => s.pageIndex);
   const selection = useSelectionStore((s) => s.selection);
+  const selectedPathList = useSelectionStore((s) => s.paths);
   const setPage = useSelectionStore((s) => s.setPage);
   const select = useSelectionStore((s) => s.select);
   const clearSelection = useSelectionStore((s) => s.clear);
@@ -42,7 +46,7 @@ export default function Canvas() {
   const zoomIn = useUIStore((s) => s.zoomIn);
   const zoomOut = useUIStore((s) => s.zoomOut);
   const hoverKey = useUIStore((s) => s.hoverKey);
-  const setHoverKey = useUIStore((s) => s.setHoverKey);
+  const flashMessage = useUIStore((s) => s.error);
   const fitRequest = useUIStore((s) => s.fitRequest);
   const focusRequest = useUIStore((s) => s.focusRequest);
   const requestFit = useUIStore((s) => s.requestFit);
@@ -57,6 +61,18 @@ export default function Canvas() {
   const page = rendered.pages[pageIndex] ?? rendered.pages[0];
   const selectedKey = selection && selection.pageIndex === pageIndex ? pathKey(selection.path) : null;
   const selectedNode = selection ? getAt(config.pages[pageIndex]?.sections ?? [], selection.path) : null;
+  const selectedKeys = selection && selection.pageIndex === pageIndex
+    ? (selectedPathList.length ? selectedPathList : [selection.path]).map(pathKey)
+    : [];
+
+  const interactions = useCanvasInteractions(doc, sizerRef);
+  useEffect(() => setCanvasDocument(doc), [doc]);
+  const box = measure(doc, selectedKey);
+  const sizeLabel = selectedNode && box
+    ? interactions.resizing
+      ? `${interactions.resizing.w} × ${interactions.resizing.h}`
+      : `${sizeText(selectedNode, 'width', box.w)} × ${sizeText(selectedNode, 'height', box.h)}`
+    : null;
 
   // --- zoom helpers -----------------------------------------------------------
 
@@ -120,12 +136,6 @@ export default function Canvas() {
   useEffect(() => notifyLayout(), [zoom, selectedKey]);
 
   // --- canvas events ------------------------------------------------------------
-
-  const handlePick = useCallback((nid: string | null) => {
-    const idx = useSelectionStore.getState().pageIndex;
-    if (nid === null) useSelectionStore.getState().clear();
-    else useSelectionStore.getState().select({ pageIndex: idx, path: parsePathKey(nid) });
-  }, []);
 
   const handlePageWheel = useCallback((e: WheelEvent) => {
     const sizer = sizerRef.current;
@@ -263,8 +273,8 @@ export default function Canvas() {
                     viewportHeight={VIEWPORT.height}
                     onHeight={setPageHeight}
                     onLayout={notifyLayout}
-                    onPick={handlePick}
-                    onHover={setHoverKey}
+                    onPointer={interactions.onPointer}
+                    renderKey={interactions.renderKey}
                     onWheel={handlePageWheel}
                     onDocument={setDoc}
                   />
@@ -273,9 +283,16 @@ export default function Canvas() {
               <Overlay
                 doc={doc}
                 zoom={zoom}
-                selectedKey={selectedKey}
-                selectedLabel={selectedNode ? labelFor(selectedNode) : ''}
+                selectedKeys={selectedKeys}
+                primaryKey={selectedKey}
+                label={selectedNode ? labelFor(selectedNode) : ''}
+                sizeLabel={selectedKeys.length === 1 ? sizeLabel : null}
                 hoverKey={hoverKey}
+                handles={selectedKeys.length === 1}
+                drop={interactions.drop}
+                dropInvalid={interactions.dropInvalid}
+                editing={interactions.editing}
+                onHandleDown={interactions.onHandleDown}
               />
             </div>
           </div>
@@ -291,9 +308,25 @@ export default function Canvas() {
         </div>
       )}
 
+      {flashMessage && (
+        <div className="pointer-events-none absolute bottom-16 left-1/2 z-30 -translate-x-1/2 rounded-md border border-white/10 bg-[#2c2c2c] px-3 py-1.5 text-[11px] text-white/80 shadow-lg shadow-black/40">
+          {flashMessage}
+        </div>
+      )}
+
       <ZoomWidget zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onFit={requestFit} />
     </div>
   );
+}
+
+/** Figma-style size readout: a fixed number, Fill, Hug, or the measured size when unset. */
+function sizeText(node: Node, axis: 'width' | 'height', measured: number): string {
+  const v = (node as unknown as Record<string, unknown>)[axis];
+  if (v === 'fill') return 'Fill';
+  if (v === 'hug') return 'Hug';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'string') return v;
+  return String(Math.round(measured));
 }
 
 function ZoomWidget({ zoom, onZoomIn, onZoomOut, onFit }: { zoom: number; onZoomIn: () => void; onZoomOut: () => void; onFit: () => void }) {

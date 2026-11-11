@@ -36,6 +36,8 @@ interface UIState {
   /** Bumped to ask the canvas to zoom to fit / zoom to the selection. */
   fitRequest: number;
   focusRequest: number;
+  /** Bumped to start editing the selected text in place (Enter). */
+  editRequest: number;
 
   /** Canvas zoom factor; 1 = 100%. */
   zoom: number;
@@ -52,6 +54,9 @@ interface UIState {
   setHoverKey: (key: string | null) => void;
   requestFit: () => void;
   requestFocus: () => void;
+  requestEdit: () => void;
+  /** Show a short message on the canvas (e.g. why a drop was refused). */
+  flash: (message: string) => void;
 
   setZoom: (zoom: number) => void;
   zoomIn: () => void;
@@ -75,6 +80,8 @@ function nextStep(current: number, direction: 1 | -1): number {
   return ZOOM_MIN;
 }
 
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+
 export const useUIStore = create<UIState>((set, get) => ({
   dragFrom: null,
   dropTarget: null,
@@ -84,6 +91,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   hoverKey: null,
   fitRequest: 0,
   focusRequest: 0,
+  editRequest: 0,
   zoom: 1,
 
   startDrag: (path) => set({ dragFrom: path, dropTarget: null }),
@@ -98,6 +106,14 @@ export const useUIStore = create<UIState>((set, get) => ({
   setHoverKey: (hoverKey) => set({ hoverKey }),
   requestFit: () => set((s) => ({ fitRequest: s.fitRequest + 1 })),
   requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
+  requestEdit: () => set((s) => ({ editRequest: s.editRequest + 1 })),
+  flash: (message) => {
+    set({ error: message });
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      if (get().error === message) set({ error: null });
+    }, 2600);
+  },
 
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   zoomIn: () => set({ zoom: nextStep(get().zoom, 1) }),

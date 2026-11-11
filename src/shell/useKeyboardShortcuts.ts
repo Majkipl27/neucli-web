@@ -1,13 +1,16 @@
 import { useEffect } from 'react';
 import { useDocumentStore } from '../store/useDocument';
-import { useSelectionStore } from '../store/useSelection';
+import { selectedPaths, useSelectionStore } from '../store/useSelection';
 import { useUIStore } from '../store/useUI';
 import {
   deleteNode as cmdDeleteNode,
-  duplicateNode as cmdDuplicateNode,
   insertNode as cmdInsertNode,
 } from '../document/commands';
-import { getAt } from '../document/tree';
+import { deleteMany, duplicateMany, groupMany, ungroup, areSiblings, normalizePaths } from '../document/multi';
+import { getAt, parentPath } from '../document/tree';
+import { canvasDocument } from '../canvas/registry';
+import { elementFor } from '../canvas/interaction';
+import { canvasGestureActive } from '../canvas/useCanvasInteractions';
 import { getClipboardNode, setClipboardNode } from '../document/clipboard';
 import { exportConfig, filenameFor } from '../document/io';
 import type { Node, Path, Selection } from '../document/types';
@@ -53,6 +56,34 @@ function pasteNode(node: Node): void {
   if (path) select({ pageIndex, path });
 }
 
+/** First child of a node: its children, else its first non-empty slot. */
+function firstChild(node: Node, path: Path): Path | null {
+  const children = (node as { children?: Node[] }).children;
+  if (children?.length) return [...path, 0];
+  for (const [name, list] of Object.entries((node as { slots?: Record<string, Node[]> }).slots ?? {})) {
+    if (list.length) return [...path, name, 0];
+  }
+  return null;
+}
+
+/**
+ * The wrapper for Cmd+G: a frame that keeps the parent's flow (row stays a
+ * row, with the same gap) so grouping doesn't rearrange anything.
+ */
+function groupFrame(firstPath: Path): Record<string, unknown> {
+  const el = elementFor(canvasDocument(), firstPath)?.parentElement;
+  const frame: Record<string, unknown> = { name: 'Group' };
+  if (!el) return frame;
+  const cs = el.ownerDocument.defaultView!.getComputedStyle(el);
+  const row = cs.display.includes('flex') && cs.flexDirection.startsWith('row');
+  const gap = Math.round(parseFloat(row ? cs.columnGap : cs.rowGap) || 0);
+  const layout: Record<string, unknown> = {};
+  if (row) layout.direction = 'row';
+  if (gap > 0) layout.gap = gap;
+  if (Object.keys(layout).length) frame.layout = layout;
+  return frame;
+}
+
 function downloadYaml(): void {
   const config = useDocumentStore.getState().config;
   const yaml = exportConfig(config);
@@ -75,8 +106,10 @@ function downloadYaml(): void {
  * - Ctrl/Cmd+C / X / V: copy / cut / paste subtree (skipped while typing)
  * - Ctrl/Cmd + "+" / "-" / "0": zoom the canvas in / out / to 100%
  * - Shift+1 / Shift+2: zoom to fit / zoom to selection
- * - Delete / Backspace: delete selected node (only when not typing)
- * - Escape: close YAML drawer if open, otherwise clear selection
+ * - Delete / Backspace: delete the selected nodes (only when not typing)
+ * - Enter / Shift+Enter: select first child / parent; Enter on text edits it
+ * - Ctrl/Cmd+G: wrap the selected siblings in a frame; Ctrl/Cmd+Shift+G: unwrap a frame
+ * - Escape: close YAML drawer if open, otherwise select the parent, or clear at the top
  */
 export function useKeyboardShortcuts(): void {
   useEffect(() => {
@@ -129,11 +162,17 @@ export function useKeyboardShortcuts(): void {
       }
 
       if (e.key === 'Escape') {
+        // A drag or resize on the canvas handles its own Esc (cancel).
+        if (canvasGestureActive() || e.defaultPrevented) return;
         const ui = useUIStore.getState();
+        const sel = useSelectionStore.getState();
         if (ui.yamlOpen) {
           ui.setYamlOpen(false);
+        } else if (!typing && sel.selection && parentPath(sel.selection.path).length > 0) {
+          e.preventDefault();
+          sel.selectPath(parentPath(sel.selection.path));
         } else {
-          useSelectionStore.getState().clear();
+          sel.clear();
           // Drop focus so the next keystroke isn't captured by whatever input
           // stole focus earlier; e.g. after closing a form.
           if (document.activeElement instanceof HTMLElement) {
@@ -176,26 +215,73 @@ export function useKeyboardShortcuts(): void {
         return;
       }
 
+      const paths = selectedPaths();
+
       if (mod && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault();
+        let copies: Path[] = [];
         useDocumentStore.getState().dispatch((c) => {
-          const result = cmdDuplicateNode(c, selection);
+          const result = duplicateMany(c, selection.pageIndex, paths);
           if (!result) return null;
-          // Move selection onto the duplicate so successive Cmd+D stacks copies.
-          queueMicrotask(() =>
-            useSelectionStore.getState().select({
-              pageIndex: selection.pageIndex,
-              path: result.newPath,
-            }),
-          );
+          copies = result.newPaths;
           return result.config;
         });
+        // Select the copies so successive Cmd+D stacks more.
+        if (copies.length) useSelectionStore.getState().selectMany(copies);
+        return;
+      }
+
+      if (mod && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault();
+        const sel = useSelectionStore.getState();
+        if (e.shiftKey) {
+          let children: Path[] = [];
+          useDocumentStore.getState().dispatch((c) => {
+            const result = ungroup(c, selection.pageIndex, selection.path);
+            if (!result) return null;
+            children = result.newPaths;
+            return result.config;
+          });
+          if (children.length) sel.selectMany(children);
+          else useUIStore.getState().flash('Only a frame can be unwrapped.');
+          return;
+        }
+        const targets = normalizePaths(paths);
+        if (!areSiblings(targets)) {
+          useUIStore.getState().flash('Group works on layers that share a parent.');
+          return;
+        }
+        let wrapped: Path | null = null;
+        useDocumentStore.getState().dispatch((c) => {
+          const result = groupMany(c, selection.pageIndex, targets, groupFrame(targets[0]));
+          if (!result) return null;
+          wrapped = result.newPath;
+          return result.config;
+        });
+        if (wrapped) sel.selectPath(wrapped);
+        return;
+      }
+
+      if (e.key === 'Enter' && !mod) {
+        e.preventDefault();
+        const config = useDocumentStore.getState().config;
+        const sections = config.pages[selection.pageIndex]?.sections ?? [];
+        const node = getAt(sections, selection.path);
+        if (!node) return;
+        if (e.shiftKey) {
+          const up = parentPath(selection.path);
+          if (up.length) useSelectionStore.getState().selectPath(up);
+          return;
+        }
+        const down = firstChild(node, selection.path);
+        if (down) useSelectionStore.getState().selectPath(down);
+        else useUIStore.getState().requestEdit();
         return;
       }
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
-        useDocumentStore.getState().dispatch((c) => cmdDeleteNode(c, selection));
+        useDocumentStore.getState().dispatch((c) => deleteMany(c, selection.pageIndex, paths));
         useSelectionStore.getState().clear();
         return;
       }
