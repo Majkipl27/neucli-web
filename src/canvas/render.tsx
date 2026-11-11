@@ -12,7 +12,7 @@ import { Fragment, type ReactNode } from 'react';
 import { Frame, Text, Image, Link, Input, cx } from 'neucli/core/primitives';
 import {
   childFlows, componentRestClasses, isInstance, layoutOf, nodeClasses, pageParentFlows,
-  rootSizing, slotParentFlows, sourceOf, COLUMN_FLOWS,
+  rootOverrides, slotParentFlows, sourceOf, COLUMN_FLOWS,
 } from 'neucli/core';
 import type { Config, Flows, InstanceNode, Node, Page, PrimitiveNode } from 'neucli/core';
 import type { ElementType } from 'react';
@@ -130,7 +130,7 @@ export function renderNode(any: Node, parent: Flows, ctx: Ctx, nid: string | nul
 }
 
 interface Forward {
-  sizing: string;
+  overrides: string;
   className: string | undefined;
   rest: Record<string, unknown>;
 }
@@ -164,7 +164,7 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
   }
 
   const inner: Ctx = { config: ctx.config, scope, slots };
-  const sizing = forward ? forward.sizing : rootSizing(ctx.config, def, node, parent);
+  const overrides = forward ? forward.overrides : rootOverrides(ctx.config, def, node, parent);
   const className = forward ? forward.className : node.className;
   const rest = forward
     ? forward.rest
@@ -175,8 +175,8 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
       };
 
   const root = def.root;
-  if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { sizing, className, rest });
-  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), sizing, className), rest });
+  if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { overrides, className, rest });
+  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), overrides, className), rest });
 }
 
 /** A page inside its layout, as `App.tsx` + the page component would render it. */
@@ -193,8 +193,8 @@ export function PageView({ config, page }: { config: Config; page: Page }): Reac
 function LayoutWithContent({ config, layout, children }: { config: Config; layout: string; children: ReactNode }): ReactNode {
   const def = config.components![layout];
   const inner: Ctx = { config, scope: {}, slots: { children } };
-  const sizing = rootSizing(config, def, null, COLUMN_FLOWS);
+  const overrides = rootOverrides(config, def, null, COLUMN_FLOWS);
   const root = def.root!;
-  if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { sizing, className: undefined, rest: {} });
-  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), sizing), rest: {} });
+  if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { overrides, className: undefined, rest: {} });
+  return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), overrides), rest: {} });
 }
