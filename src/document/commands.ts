@@ -6,13 +6,14 @@
 import type { Config, Node, Page, Path, Selection } from './types';
 import { cloneNode, getAt, getList, insertAt, moveNode, removeAt, swapSibling, updateAt } from './tree';
 import { acceptsChildren } from './palette';
+import { rootsOf, withRoots } from './scope';
 
 function withPages(config: Config, fn: (pages: Page[]) => Page[]): Config {
   return { ...config, pages: fn(config.pages) };
 }
 
 function withSections(config: Config, pageIndex: number, fn: (sections: Node[]) => Node[]): Config {
-  return withPages(config, (pages) => pages.map((p, i) => (i === pageIndex ? { ...p, sections: fn(p.sections) } : p)));
+  return withRoots(config, pageIndex, fn);
 }
 
 // Pages ----------------------------------------------------------------------
@@ -66,7 +67,12 @@ export function updatePage(config: Config, index: number, updates: Partial<Page>
  * after it otherwise, or at the end of the page with nothing selected.
  */
 export function insertionPoint(config: Config, pageIndex: number, selection: Selection | null): Path {
-  const sections = config.pages[pageIndex]?.sections ?? [];
+  const sections = rootsOf(config, pageIndex);
+  // A component has one root: with nothing selected, new layers go inside it.
+  if (pageIndex < 0 && (!selection || selection.pageIndex !== pageIndex)) {
+    const root = sections[0];
+    return root && acceptsChildren(config, root) ? [0, getList(sections, [0])?.length ?? 0] : [1];
+  }
   if (!selection || selection.pageIndex !== pageIndex) return [sections.length];
   const node = getAt(sections, selection.path);
   if (!node) return [sections.length];
@@ -87,7 +93,7 @@ export function deleteNode(config: Config, target: Selection): Config {
 }
 
 export function duplicateNode(config: Config, target: Selection): { config: Config; newPath: Path } | null {
-  const source = getAt(config.pages[target.pageIndex]?.sections ?? [], target.path);
+  const source = getAt(rootsOf(config, target.pageIndex), target.path);
   if (!source) return null;
   const idx = target.path[target.path.length - 1] as number;
   const newPath = [...target.path.slice(0, -1), idx + 1];
@@ -95,13 +101,13 @@ export function duplicateNode(config: Config, target: Selection): { config: Conf
 }
 
 export function moveSibling(config: Config, target: Selection, direction: 'up' | 'down'): { config: Config; newPath: Path } | null {
-  const result = swapSibling(config.pages[target.pageIndex]?.sections ?? [], target.path, direction);
+  const result = swapSibling(rootsOf(config, target.pageIndex), target.path, direction);
   if (!result) return null;
   return { config: withSections(config, target.pageIndex, () => result.nodes), newPath: result.newPath };
 }
 
 export function moveTo(config: Config, pageIndex: number, from: Path, to: Path): { config: Config; newPath: Path } | null {
-  const result = moveNode(config.pages[pageIndex]?.sections ?? [], from, to);
+  const result = moveNode(rootsOf(config, pageIndex), from, to);
   if (!result) return null;
   return { config: withSections(config, pageIndex, () => result.nodes), newPath: result.newPath };
 }

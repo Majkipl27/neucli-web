@@ -8,7 +8,8 @@
 import type { Config, Node, Path } from '../document/types';
 import { getAt, getList, isAncestorOrSelf, parentPath, parsePathKey, pathEquals, pathKey } from '../document/tree';
 import { acceptsChildren } from '../document/palette';
-import { NID_ATTR } from './render';
+import { NID_ATTR, NSLOT_ATTR } from './render';
+import { rootsOf } from '../document/scope';
 
 export interface Rect {
   x: number;
@@ -126,13 +127,31 @@ export function resolveDrop(
   y: number,
   armed: (sibling: Path) => boolean,
 ): { drop: Drop; sibling: Path | null } | null {
-  const sections = config.pages[pageIndex]?.sections ?? [];
+  const sections = rootsOf(config, pageIndex);
+
+  // An empty named slot's drop target (only rendered while dragging).
+  for (const el of doc.elementsFromPoint(x, y)) {
+    const key = el.closest(`[${NSLOT_ATTR}]`)?.getAttribute(NSLOT_ATTR);
+    if (!key) continue;
+    const [nid, slot] = key.split('|');
+    const instance = parsePathKey(nid);
+    if (insideAny(instance, dragging)) break;
+    const r = rectOf(el.closest(`[${NSLOT_ATTR}]`));
+    if (!r) break;
+    return {
+      drop: { list: [...instance, slot], index: 0, line: { x: r.x + 4, y: r.y + r.h / 2 - 1, w: Math.max(16, r.w - 8), h: 2 }, container: r },
+      sibling: null,
+    };
+  }
+
+  // In a main component there's one root; "the top level" means inside it.
+  const top: Path = pageIndex < 0 && sections[0] && acceptsChildren(config, sections[0]) ? [0] : [];
   const deepest = deepestAt(doc, x, y, dragging);
   const dragList = dragging.length && dragging.every((p) => pathEquals(p.slice(0, -1), dragging[0].slice(0, -1)))
     ? dragging[0].slice(0, -1)
     : null;
 
-  if (!deepest) return { drop: placeIn(doc, sections, [], x, y), sibling: null };
+  if (!deepest) return { drop: placeIn(doc, sections, top, x, y), sibling: null };
 
   const chain = ancestors(deepest);
   const sibling = dragList ? chain.find((p) => pathEquals(p.slice(0, -1), dragList) && !insideAny(p, dragging)) ?? null : null;
@@ -147,7 +166,7 @@ export function resolveDrop(
     if (acceptsChildren(config, node)) return { drop: placeIn(doc, sections, p, x, y), sibling };
     return { drop: placeIn(doc, sections, p.slice(0, -1), x, y), sibling };
   }
-  return { drop: placeIn(doc, sections, [], x, y), sibling };
+  return { drop: placeIn(doc, sections, top, x, y), sibling };
 }
 
 /** Index and indicator for a drop at (x, y) into the list at `list`. */

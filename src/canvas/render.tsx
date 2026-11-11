@@ -11,13 +11,15 @@
 import { Fragment, type ReactNode } from 'react';
 import { Frame, Text, Image, Link, Input, cx } from 'neucli/core/primitives';
 import {
-  childFlows, componentRestClasses, isInstance, layoutOf, nodeClasses, pageParentFlows,
+  childFlows, collectSlots, componentRestClasses, isInstance, layoutOf, nodeClasses, pageParentFlows,
   rootOverrides, slotParentFlows, sourceOf, COLUMN_FLOWS,
 } from 'neucli/core';
 import type { Config, Flows, InstanceNode, Node, Page, PrimitiveNode } from 'neucli/core';
 import type { ElementType } from 'react';
 
 export const NID_ATTR = 'data-nid';
+/** Drop target for an empty named slot of an instance: `<instance nid>|<slot name>`. */
+export const NSLOT_ATTR = 'data-nslot';
 
 type Scope = Record<string, unknown> | null;
 
@@ -27,7 +29,18 @@ interface Ctx {
   scope: Scope;
   /** Rendered slot content while inside a component. */
   slots: Record<string, ReactNode>;
+  /** Editing a main component: its own slots show as placeholders. */
+  editingSlots?: boolean;
+  /** A drag is in progress: empty named slots of page instances show drop targets. */
+  dropSlots?: boolean;
 }
+
+const PLACEHOLDER_STYLE = {
+  minHeight: 40, minWidth: 80, padding: 8, borderRadius: 4, boxSizing: 'border-box',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  border: '1px dashed rgba(139, 92, 246, 0.7)', background: 'rgba(139, 92, 246, 0.07)',
+  color: 'rgb(124, 58, 237)', font: '500 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace',
+} as const;
 
 /** Props a component root receives from the instance that placed it. */
 interface RootOverride {
@@ -77,7 +90,12 @@ function childNid(nid: string | null, ...segments: (string | number)[]): string 
 export function renderNode(any: Node, parent: Flows, ctx: Ctx, nid: string | null, root?: RootOverride): ReactNode {
   if (isInstance(any)) return renderInstance(any, parent, ctx, nid, null);
   const node = any as PrimitiveNode;
-  if (node.type === 'slot') return ctx.slots[node.name ?? 'children'] ?? null;
+  if (node.type === 'slot') {
+    if (ctx.editingSlots) {
+      return <div {...(nid !== null ? { [NID_ATTR]: nid } : {})} style={PLACEHOLDER_STYLE}>{node.name ? `slot: ${node.name}` : 'slot'}</div>;
+    }
+    return ctx.slots[node.name ?? 'children'] ?? null;
+  }
 
   const common: Record<string, unknown> = {
     ...(node.id ? { id: node.id } : {}),
@@ -162,6 +180,13 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
     const flows = slotParentFlows(ctx.config, node.type, name);
     slots[name] = list.map((c, i) => <Fragment key={i}>{renderNode(c, flows, ctx, childNid(nid, name, i))}</Fragment>);
   }
+  // While dragging, an empty named slot needs something to drop onto.
+  if (ctx.dropSlots && nid !== null) {
+    for (const name of collectSlots(def).named) {
+      if (node.slots?.[name]?.length) continue;
+      slots[name] = <div {...{ [NSLOT_ATTR]: `${nid}|${name}` }} style={PLACEHOLDER_STYLE}>{name}</div>;
+    }
+  }
 
   const inner: Ctx = { config: ctx.config, scope, slots };
   const overrides = forward ? forward.overrides : rootOverrides(ctx.config, def, node, parent);
@@ -179,9 +204,30 @@ function renderInstance(node: InstanceNode, parent: Flows, ctx: Ctx, nid: string
   return renderNode(root, COLUMN_FLOWS, inner, null, { className: cx(componentRestClasses(def), overrides, className), rest });
 }
 
+/**
+ * A main component on its own, as an instance with no props or overrides
+ * would render it: declared props show their defaults, and the component's
+ * slots show as placeholders so they can be selected and moved.
+ */
+export function ComponentView({ config, name, dropSlots }: { config: Config; name: string; dropSlots?: boolean }): ReactNode {
+  const def = config.components?.[name];
+  if (!def?.root) return null;
+  const scope: Record<string, unknown> = {};
+  for (const [prop, raw] of Object.entries((def.props ?? {}) as Record<string, { type: string; default?: unknown } | string>)) {
+    const d = typeof raw === 'string' ? { type: raw } : raw;
+    // A text prop without a default would render nothing, leaving nothing to click: show its name instead.
+    scope[prop] = d.default ?? (d.type === 'text' ? `{${prop}}` : undefined);
+  }
+  const ctx: Ctx = { config, scope, slots: {}, editingSlots: true, dropSlots };
+  const root = def.root;
+  if (isInstance(root)) return renderNode(root, COLUMN_FLOWS, ctx, '0');
+  const className = cx(componentRestClasses(def), rootOverrides(config, def, null, COLUMN_FLOWS));
+  return renderNode(root, COLUMN_FLOWS, ctx, '0', { className, rest: {} });
+}
+
 /** A page inside its layout, as `App.tsx` + the page component would render it. */
-export function PageView({ config, page }: { config: Config; page: Page }): ReactNode {
-  const ctx: Ctx = { config, scope: null, slots: {} };
+export function PageView({ config, page, dropSlots }: { config: Config; page: Page; dropSlots?: boolean }): ReactNode {
+  const ctx: Ctx = { config, scope: null, slots: {}, dropSlots };
   const parent = pageParentFlows(config, page);
   const sections = page.sections.map((s, i) => <Fragment key={i}>{renderNode(s, parent, ctx, String(i))}</Fragment>);
   const layout = layoutOf(config, page);
@@ -192,7 +238,12 @@ export function PageView({ config, page }: { config: Config; page: Page }): Reac
 /** Render a layout component with already-rendered page content in its default slot. */
 function LayoutWithContent({ config, layout, children }: { config: Config; layout: string; children: ReactNode }): ReactNode {
   const def = config.components![layout];
-  const inner: Ctx = { config, scope: {}, slots: { children } };
+  // A layout gets no props from a page, so declared props render their defaults, as in generated code.
+  const scope: Record<string, unknown> = {};
+  for (const [prop, d] of Object.entries((def.props ?? {}) as Record<string, { default?: unknown } | string>)) {
+    scope[prop] = typeof d === 'object' ? d.default : undefined;
+  }
+  const inner: Ctx = { config, scope, slots: { children } };
   const overrides = rootOverrides(config, def, null, COLUMN_FLOWS);
   const root = def.root!;
   if (isInstance(root)) return renderInstance(root, COLUMN_FLOWS, inner, null, { overrides, className: undefined, rest: {} });

@@ -10,6 +10,7 @@
 
 import type { Config, Node, Path } from './types';
 import { cloneNode, getAt, insertAt, isAncestorOrSelf, pathEquals, updateAt } from './tree';
+import { rootsOf, withRoots } from './scope';
 
 const MARK = '__nc_mark';
 const SLOT = '__nc_drop';
@@ -18,7 +19,7 @@ type Marked = Node & { [MARK]?: number };
 type WithLists = { children?: Node[]; slots?: Record<string, Node[]> };
 
 function withSections(config: Config, pageIndex: number, fn: (sections: Node[]) => Node[]): Config {
-  return { ...config, pages: config.pages.map((p, i) => (i === pageIndex ? { ...p, sections: fn(p.sections) } : p)) };
+  return withRoots(config, pageIndex, fn);
 }
 
 /** Sort paths in document order (pre-order), dropping any path inside another selected one. */
@@ -101,7 +102,7 @@ function isPlaceholder(n: Node): boolean {
  * Returns null for impossible moves (into one of the moved nodes).
  */
 export function moveMany(config: Config, pageIndex: number, paths: Path[], listPath: Path, index: number): { config: Config; newPaths: Path[] } | null {
-  const sections = config.pages[pageIndex]?.sections;
+  const sections = rootsOf(config, pageIndex);
   if (!sections) return null;
   const moving = normalizePaths(paths);
   if (moving.length === 0) return null;
@@ -125,6 +126,7 @@ export function moveMany(config: Config, pageIndex: number, paths: Path[], listP
   const base = at[at.length - 1] as number;
   const newPaths = nodes.map((_, i) => [...at.slice(0, -1), base + i]);
   const next = withSections(config, pageIndex, () => s);
+  if (next === config) return null; // refused (a component keeps a single root)
   return samePlacement(moving, newPaths) ? null : { config: next, newPaths };
 }
 
@@ -133,7 +135,7 @@ function samePlacement(a: Path[], b: Path[]): boolean {
 }
 
 export function deleteMany(config: Config, pageIndex: number, paths: Path[]): Config {
-  const sections = config.pages[pageIndex]?.sections;
+  const sections = rootsOf(config, pageIndex);
   if (!sections) return config;
   const marked = mark(sections, normalizePaths(paths));
   return withSections(config, pageIndex, () => mapLists(marked, (list) => list.filter((n) => (n as Marked)[MARK] === undefined)));
@@ -141,7 +143,7 @@ export function deleteMany(config: Config, pageIndex: number, paths: Path[]): Co
 
 /** A copy of each node right after it. Returns the copies' paths. */
 export function duplicateMany(config: Config, pageIndex: number, paths: Path[]): { config: Config; newPaths: Path[] } | null {
-  const sections = config.pages[pageIndex]?.sections;
+  const sections = rootsOf(config, pageIndex);
   const targets = normalizePaths(paths);
   if (!sections || targets.length === 0) return null;
   const marked = mark(sections, targets);
@@ -165,7 +167,8 @@ export function duplicateMany(config: Config, pageIndex: number, paths: Path[]):
       return rest as unknown as Node;
     }),
   );
-  return { config: withSections(config, pageIndex, () => s), newPaths };
+  const next = withSections(config, pageIndex, () => s);
+  return next === config ? null : { config: next, newPaths };
 }
 
 /** Do all paths sit in the same list? */
@@ -180,7 +183,7 @@ export function areSiblings(paths: Path[]): boolean {
  * their order. `frame` supplies the wrapper's own keys (layout etc.).
  */
 export function groupMany(config: Config, pageIndex: number, paths: Path[], frame: Record<string, unknown>): { config: Config; newPath: Path } | null {
-  const sections = config.pages[pageIndex]?.sections;
+  const sections = rootsOf(config, pageIndex);
   const targets = normalizePaths(paths);
   if (!sections || !areSiblings(targets)) return null;
   const list = targets[0].slice(0, -1);
@@ -188,7 +191,7 @@ export function groupMany(config: Config, pageIndex: number, paths: Path[], fram
   // moveMany returns null when nothing moved (already contiguous), which is fine here.
   const base = moved?.config ?? config;
   const startIdx = (moved?.newPaths[0] ?? targets[0])[list.length] as number;
-  const children = targets.map((_, i) => getAt(base.pages[pageIndex].sections, [...list, startIdx + i])!).filter(Boolean);
+  const children = targets.map((_, i) => getAt(rootsOf(base, pageIndex), [...list, startIdx + i])!).filter(Boolean);
   if (children.length !== targets.length) return null;
   const wrapper = { type: 'frame', ...frame, children } as unknown as Node;
   const next = withSections(base, pageIndex, (s) => {
@@ -196,6 +199,7 @@ export function groupMany(config: Config, pageIndex: number, paths: Path[], fram
     for (let i = children.length - 1; i >= 0; i--) out = removeIndex(out, list, startIdx + i);
     return insertAt(out, [...list, startIdx], wrapper);
   });
+  if (next === base) return null;
   return { config: next, newPath: [...list, startIdx] };
 }
 
@@ -220,7 +224,7 @@ function mapAtList(nodes: Node[], list: Path, fn: (l: Node[]) => Node[]): Node[]
 
 /** Replace a frame with its children. Returns the children's paths. */
 export function ungroup(config: Config, pageIndex: number, path: Path): { config: Config; newPaths: Path[] } | null {
-  const sections = config.pages[pageIndex]?.sections;
+  const sections = rootsOf(config, pageIndex);
   const node = sections && getAt(sections, path);
   if (!node || node.type !== 'frame') return null;
   const children = (node as WithLists).children ?? [];

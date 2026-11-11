@@ -12,14 +12,19 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { googleFontsUrl } from 'neucli/core';
 import type { Config, Page } from 'neucli/core';
-import { PageView } from './render';
+import { ComponentView, PageView } from './render';
 import { classesIn, compilerFor, pinViewportUnits } from './tailwind';
 
 const SRC_DOC = '<!doctype html><html><head><meta charset="utf-8"><style id="nc-tw"></style></head><body><div id="root"></div></body></html>';
 
 export interface CanvasFrameProps {
   config: Config;
-  page: Page;
+  /** The page to render, or null when a main component is open. */
+  page: Page | null;
+  /** A main component to render on its own (Figma's main component). */
+  component?: string | null;
+  /** Show drop targets for empty named slots (while dragging). */
+  dropSlots?: boolean;
   width: number;
   viewportHeight: number;
   onHeight: (height: number) => void;
@@ -58,7 +63,7 @@ function pointer(type: CanvasPointer['type'], e: MouseEvent): CanvasPointer {
 }
 
 function CanvasFrame(props: CanvasFrameProps) {
-  const { config, page, width, viewportHeight, renderKey } = props;
+  const { config, page, component, dropSlots, width, viewportHeight, renderKey } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [doc, setDoc] = useState<Document | null>(null);
   const [height, setHeight] = useState(viewportHeight);
@@ -153,7 +158,7 @@ function CanvasFrame(props: CanvasFrameProps) {
   useEffect(() => {
     if (!doc) return;
     doc.documentElement.lang = config.meta.lang ?? 'en';
-    doc.title = page.title ?? page.name;
+    doc.title = component ?? page?.title ?? page?.name ?? '';
     let link = doc.getElementById('nc-fonts') as HTMLLinkElement | null;
     if (!fontsUrl) {
       link?.remove();
@@ -169,7 +174,7 @@ function CanvasFrame(props: CanvasFrameProps) {
       link.href = fontsUrl;
       link.onload = () => doc.fonts.ready.then(() => cb.current.onLayout());
     }
-  }, [doc, fontsUrl, config.meta.lang, page]);
+  }, [doc, fontsUrl, config.meta.lang, page, component]);
 
   // Tailwind: compile exactly the classes on the page after every render.
   const theme = config.theme;
@@ -188,7 +193,7 @@ function CanvasFrame(props: CanvasFrameProps) {
     return () => {
       cancelled = true;
     };
-  }, [doc, config, page, theme, viewportHeight, renderKey]);
+  }, [doc, config, page, component, dropSlots, theme, viewportHeight, renderKey]);
 
   // Grow the iframe to the page height; shrink back when content shrinks.
   useEffect(() => {
@@ -217,7 +222,12 @@ function CanvasFrame(props: CanvasFrameProps) {
         scrolling="no"
         style={{ width, height, border: 0, display: 'block', background: 'white' }}
       />
-      {doc && createPortal(<PageView key={renderKey} config={config} page={page} />, doc.getElementById('root')!)}
+      {doc && createPortal(
+        component
+          ? <ComponentView key={`c:${component}:${renderKey}`} config={config} name={component} dropSlots={dropSlots} />
+          : page && <PageView key={renderKey} config={config} page={page} dropSlots={dropSlots} />,
+        doc.getElementById('root')!,
+      )}
     </>
   );
 }

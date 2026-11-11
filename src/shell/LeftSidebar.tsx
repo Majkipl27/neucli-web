@@ -37,6 +37,10 @@ function deleteTokenCmd(kind: TokenKind, name: string) {
   dispatch((c) => deleteToken(c, kind, name));
 }
 import LayerTree from './LayerTree';
+import { scopeComponent, componentScope } from '../document/scope';
+import { usageOf } from '../document/components';
+import { collectSlots } from 'neucli/core';
+import { openComponent } from './componentActions';
 
 // ─────────────────────────────────────────────
 // Root
@@ -54,6 +58,7 @@ export default function LeftSidebar() {
   const setEditingPageIndex = useUIStore((s) => s.setEditingPageIndex);
 
   const currentPage = config.pages[pageIndex];
+  const currentComponent = scopeComponent(config, pageIndex);
 
   function addPage() {
     const result = cmdAddPage(config);
@@ -101,6 +106,8 @@ export default function LeftSidebar() {
         />
       )}
 
+      <ComponentsSection config={config} active={currentComponent} />
+
       {/* All scrollable content below */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {/* Layers */}
@@ -108,7 +115,9 @@ export default function LeftSidebar() {
           <span className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
             Layers
           </span>
-          <span className="truncate text-[10px] text-white/25">{currentPage?.name}</span>
+          <span className={`truncate text-[10px] ${currentComponent ? 'text-violet-300/70' : 'text-white/25'}`}>
+            {currentComponent ? `◆ ${currentComponent}` : currentPage?.name}
+          </span>
         </div>
         <div className="px-1 py-1">
           <LayerTree />
@@ -200,6 +209,61 @@ function PagesSection({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Components (main components, Figma-style)
+// ─────────────────────────────────────────────
+
+function ComponentsSection({ config, active }: { config: Config; active: string | null }) {
+  const [open, setOpen] = useState(true);
+  const names = Object.keys(config.components ?? {});
+  const layouts = new Set([config.layout, ...config.pages.map((p) => p.layout)].filter((l): l is string => typeof l === 'string'));
+  return (
+    <div className="shrink-0 border-b border-white/10">
+      <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-center justify-between px-3 py-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-white/40">Components</span>
+        <span className="text-[10px] text-white/25">{names.length || ''} {open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="max-h-[200px] overflow-y-auto px-1 pb-1">
+          {names.length === 0 && (
+            <div className="px-2 pb-2 text-[11px] leading-relaxed text-white/30">
+              None yet. Select layers and press ⌥⌘K, or insert one from the Component menu.
+            </div>
+          )}
+          {names.map((name) => {
+            const use = usageOf(config, name);
+            const def = config.components![name];
+            const isLayout = layouts.has(name);
+            const slots = def.root ? collectSlots(def) : null;
+            return (
+              <button
+                key={name}
+                type="button"
+                title={`Edit ${name}: every instance follows`}
+                onClick={() => (active === name ? undefined : openComponent(name))}
+                className={[
+                  'flex w-full items-center gap-2 rounded px-2 py-[5px] text-left transition-colors',
+                  active === name ? 'bg-violet-500/25 text-white' : 'text-white/60 hover:bg-white/5 hover:text-white/80',
+                ].join(' ')}
+              >
+                <span className="w-4 shrink-0 text-center text-[10px] text-violet-300/80">&#x25C6;</span>
+                <span className="flex-1 truncate text-[12px]">{name}</span>
+                {isLayout && <span className="shrink-0 rounded bg-white/5 px-1 text-[9px] uppercase tracking-wide text-white/40">layout</span>}
+                {!isLayout && slots?.hasDefault && use.instances === 0 && (
+                  <span className="shrink-0 text-[10px] text-white/20" title="Has a default slot, so it can also be a layout">slot</span>
+                )}
+                <span className="w-5 shrink-0 text-right text-[10px] text-white/30" title={`${use.instances} instance${use.instances === 1 ? '' : 's'}`}>
+                  {use.instances || ''}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

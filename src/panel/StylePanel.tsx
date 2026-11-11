@@ -22,6 +22,7 @@ import {
 } from '../document/style';
 import { elementFor, rectOf } from '../canvas/interaction';
 import { canvasDocument } from '../canvas/registry';
+import { withRoots } from '../document/scope';
 import {
   ColorField, IconButton, Mark, NumberField, Row, Section, Seg, Select, Toggle, type ChangeKind,
 } from './controls';
@@ -60,10 +61,7 @@ function useEditor(node: Node, selection: Selection): Editor {
 
   const update = (fn: (n: Node) => Node, options?: DispatchOptions) =>
     dispatch(
-      (c) => ({
-        ...c,
-        pages: c.pages.map((p, i) => (i === selection.pageIndex ? { ...p, sections: updateAt(p.sections, selection.path, fn) } : p)),
-      }),
+      (c) => withRoots(c, selection.pageIndex, (s) => updateAt(s, selection.path, fn)),
       options,
     );
 

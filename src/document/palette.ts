@@ -46,6 +46,7 @@ export function createNode(type: string): Node {
 
 /** Layer name: `name:` if set, else a short preview of the content, else the type. */
 export function labelFor(any: Node): string {
+  if (any.type === 'slot') return any.name ? `slot: ${any.name}` : 'slot';
   if (any.name) return any.name;
   if (isInstance(any)) return any.type;
   const node = any as PrimitiveNode;

@@ -21,6 +21,12 @@ import { detachInstance } from '../document/detach';
 import { useUIStore, VIEWPORTS } from '../store/useUI';
 import { STYLE_KEYS } from 'neucli/core';
 import type { InstanceNode } from '../document/types';
+import { rootsOf, scopeComponent } from '../document/scope';
+import { PRESETS } from 'neucli/core';
+import type { Config } from '../document/types';
+import ComponentPanel, { DraftField } from './ComponentPanel';
+import { addLayout, openComponent } from './componentActions';
+import { bindText, boundProp, layoutCandidates, normalizeProp } from '../document/components';
 
 /**
  * Properties of the selection: content fields, then the structured style
@@ -34,8 +40,9 @@ export default function RightPanel() {
   const selection = useSelectionStore((s) => s.selection);
   const clearSelection = useSelectionStore((s) => s.clear);
 
-  const node = selection ? getAt(config.pages[selection.pageIndex]?.sections ?? [], selection.path) : null;
-  const page = config.pages[pageIndex];
+  const node = selection ? getAt(rootsOf(config, selection.pageIndex), selection.path) : null;
+  const page = pageIndex >= 0 ? config.pages[pageIndex] : undefined;
+  const component = scopeComponent(config, pageIndex);
 
   return (
     <aside className="flex w-[300px] shrink-0 flex-col border-l border-white/10 bg-[#252526]">
@@ -46,16 +53,20 @@ export default function RightPanel() {
             node={node}
             selection={selection}
             onDelete={() => {
-              dispatch((c) => cmdDeleteNode(c, selection));
+              const next = cmdDeleteNode(config, selection);
+              if (next === config) return useUIStore.getState().flash("A component's root can't be deleted. Delete the component from its panel instead.");
+              dispatch(() => next);
               clearSelection();
             }}
           />
         </ErrorBoundary>
+      ) : component ? (
+        <ComponentPanel config={config} name={component} />
       ) : page ? (
         <PagePanel
           page={page}
-          layouts={Object.keys(config.components ?? {})}
-          defaultLayout={config.layout}
+          pageIndex={pageIndex}
+          config={config}
           onChange={(updates) => dispatch((c) => cmdUpdatePage(c, pageIndex, updates), { mode: 'coalesce', group: `page:${pageIndex}` })}
         />
       ) : null}
@@ -93,7 +104,7 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
 
   function resetOverrides() {
     dispatch((c) => {
-      const current = getAt(c.pages[selection.pageIndex]?.sections ?? [], selection.path);
+      const current = getAt(rootsOf(c, selection.pageIndex), selection.path);
       if (!current) return null;
       const out: Record<string, unknown> = { ...current };
       for (const k of STYLE_KEYS) delete out[k];
@@ -110,6 +121,12 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
           <div className="truncate text-[12px] font-medium text-white/90">{labelFor(any)}</div>
           <div className="text-[10px] text-white/35">{instance ? `instance of ${any.type}` : any.type}</div>
         </div>
+        {instance && def?.root && (
+          <button type="button" onClick={() => openComponent(any.type)} title="Go to main component: edit every copy at once"
+            className="rounded px-1.5 py-0.5 text-[11px] text-violet-300/70 transition hover:bg-violet-500/10 hover:text-violet-200">
+            Edit main
+          </button>
+        )}
         {instance && (
           <button type="button" onClick={detach} title="Detach instance: turn it into plain layers"
             className="rounded px-1.5 py-0.5 text-[11px] text-violet-300/70 transition hover:bg-violet-500/10 hover:text-violet-200">
@@ -130,8 +147,12 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
       )}
 
       <div className="flex-1 overflow-auto">
+        {node.type === 'slot' && <SlotFields node={node} selection={selection} />}
         {node.type !== 'slot' && (
           <PanelSection title={instance ? `${any.type} props` : 'Content'}>
+            {(node.type === 'text' || (node.type === 'link' && node.content !== undefined)) && scopeComponent(config, selection.pageIndex) && (
+              <PropBinding node={any} selection={selection} />
+            )}
             {node.type === 'text' && (
               <>
                 <TextArea label="Text" value={String(node.content)} onChange={(v) => patch('content', v)} />
@@ -170,12 +191,12 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
 
         <StylePanel node={any} selection={selection} />
 
-        <PanelSection title="Advanced" open={false}>
+        {node.type !== 'slot' && <PanelSection title="Advanced" open={false}>
           <Row label="Layer"><TextField value={'name' in any ? any.name ?? '' : ''} placeholder={labelFor({ ...any, name: undefined } as Node)} onChange={optional('name')} /></Row>
           <Row label="HTML id"><TextField value={'id' in any ? any.id ?? '' : ''} onChange={optional('id')} /></Row>
           <Row label="Classes"><TextField mono value={'className' in any ? any.className ?? '' : ''} placeholder="hover:… transition" onChange={optional('className')} /></Row>
           <NodeYaml node={any} selection={selection} key={JSON.stringify(any)} />
-        </PanelSection>
+        </PanelSection>}
       </div>
     </>
   );
@@ -273,8 +294,51 @@ function NodeYaml({ node, selection }: { node: Node; selection: Selection }) {
 
 // --- page --------------------------------------------------------------------
 
-function PagePanel({ page, layouts, defaultLayout, onChange }: { page: Page; layouts: string[]; defaultLayout?: string; onChange: (u: Partial<Page>) => void }) {
+const LAYOUT_PRESETS = PRESETS.filter((p) => p.kind === 'layout');
+
+/**
+ * Layout picker: an existing component with a default slot, none, or a new
+ * one from a preset (copied into the document, then editable like any component).
+ */
+function LayoutSelect({ value, layouts, emptyLabel, allowNone, onPick, onNew }: {
+  value: string;
+  layouts: string[];
+  emptyLabel: string;
+  allowNone: boolean;
+  onPick: (v: string) => void;
+  onNew: (presetId: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v.startsWith('__new:')) onNew(v.slice(6));
+        else onPick(v);
+      }}
+      className="w-full rounded border border-white/10 bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-white/80 outline-none focus:border-indigo-500/50"
+    >
+      <option value="">{emptyLabel}</option>
+      {allowNone && <option value="__none">No layout</option>}
+      {layouts.length > 0 && (
+        <optgroup label="In this document">
+          {layouts.map((l) => <option key={l} value={l}>{l}</option>)}
+        </optgroup>
+      )}
+      <optgroup label="New layout">
+        {LAYOUT_PRESETS.map((p) => <option key={p.id} value={`__new:${p.id}`}>{p.label}: {p.description}</option>)}
+        <option value="__new:blank">Blank: a slot for the page, nothing else</option>
+      </optgroup>
+    </select>
+  );
+}
+
+function PagePanel({ page, pageIndex, config, onChange }: { page: Page; pageIndex: number; config: Config; onChange: (u: Partial<Page>) => void }) {
+  const dispatch = useDocumentStore((s) => s.dispatch);
+  const layouts = layoutCandidates(config);
+  const defaultLayout = config.layout;
   const layoutValue = page.layout === false ? '__none' : page.layout ?? '';
+  const effective = page.layout === false ? null : page.layout ?? defaultLayout ?? null;
   return (
     <>
       <div className="border-b border-white/10 px-3 py-2.5">
@@ -288,21 +352,39 @@ function PagePanel({ page, layouts, defaultLayout, onChange }: { page: Page; lay
           <Field label="Title" value={page.title ?? ''} onChange={(v) => onChange({ title: v || undefined })} />
           <TextArea label="Description" value={page.description ?? ''} onChange={(v) => onChange({ description: v || undefined })} />
           <div>
-            <label className="mb-1 block text-[11px] text-white/40">Layout</label>
-            <select
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-[11px] text-white/40">Layout</label>
+              {effective && config.components?.[effective] && (
+                <button type="button" onClick={() => openComponent(effective)} className="text-[11px] text-violet-300/70 hover:text-violet-200">
+                  Edit {effective}
+                </button>
+              )}
+            </div>
+            <LayoutSelect
               value={layoutValue}
-              onChange={(e) => {
-                const v = e.target.value;
-                onChange({ layout: v === '' ? undefined : v === '__none' ? false : v });
-              }}
-              className="w-full rounded border border-white/10 bg-[#1e1e1e] px-2 py-1.5 text-[12px] text-white/80 outline-none focus:border-indigo-500/50"
-            >
-              <option value="">Default{defaultLayout ? ` (${defaultLayout})` : ' (none)'}</option>
-              <option value="__none">No layout</option>
-              {layouts.map((l) => (
-                <option key={l} value={l}>{l}</option>
-              ))}
-            </select>
+              layouts={layouts}
+              emptyLabel={`Site default${defaultLayout ? ` (${defaultLayout})` : ' (none)'}`}
+              allowNone
+              onPick={(v) => onChange({ layout: v === '' ? undefined : v === '__none' ? false : v })}
+              onNew={(id) => addLayout(id, pageIndex)}
+            />
+          </div>
+        </Section>
+        <Section title="Site">
+          <div>
+            <label className="mb-1 block text-[11px] text-white/40">Default layout for every page</label>
+            <LayoutSelect
+              value={defaultLayout ?? ''}
+              layouts={layouts}
+              emptyLabel="None"
+              allowNone={false}
+              onPick={(v) => dispatch((c) => {
+                const next: Config = { ...c, layout: v || undefined };
+                if (!v) delete (next as { layout?: string }).layout;
+                return next;
+              })}
+              onNew={(id) => addLayout(id, null)}
+            />
           </div>
         </Section>
         <div className="px-3 py-4 text-center text-[11px] text-white/30">Select a layer or click the canvas to edit it.</div>
@@ -349,5 +431,73 @@ function Check({ label, checked, onChange }: { label: string; checked: boolean; 
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-indigo-500" />
       {label}
     </label>
+  );
+}
+
+// --- component editing ------------------------------------------------------------
+
+/** In a main component: show which prop a text is bound to, bind it, or unbind it. */
+function PropBinding({ node, selection }: { node: Node; selection: Selection }) {
+  const config = useDocumentStore((s) => s.config);
+  const dispatch = useDocumentStore((s) => s.dispatch);
+  const flash = useUIStore((s) => s.flash);
+  const component = scopeComponent(config, selection.pageIndex)!;
+  const def = config.components?.[component];
+  const textProps = Object.entries(def?.props ?? {}).filter(([, d]) => normalizeProp(d).type === 'text').map(([k]) => k);
+  const bound = boundProp(node);
+  const run = (prop: string | null) => {
+    const res = bindText(useDocumentStore.getState().config, selection.pageIndex, selection.path, prop);
+    if (!res.ok) return flash(res.error);
+    dispatch(() => res.config);
+  };
+  return (
+    <Row label="Prop">
+      <select
+        value={bound ?? ''}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === '__new') {
+            let name = 'text';
+            let i = 2;
+            while (def?.props && name in def.props) name = `text${i++}`;
+            run(name);
+          } else run(v || null);
+        }}
+        className="h-6 w-full rounded border border-transparent bg-white/[0.06] px-1 text-[11px] text-white/85 outline-none hover:border-white/10 focus:border-violet-400/60"
+      >
+        <option value="">Not bound (fixed text)</option>
+        {textProps.map((p) => <option key={p} value={p}>{`{${p}}`}</option>)}
+        <option value="__new">New text prop</option>
+      </select>
+    </Row>
+  );
+}
+
+/** A slot in a main component: its name (empty = the default slot). */
+function SlotFields({ node, selection }: { node: Node; selection: Selection }) {
+  const dispatch = useDocumentStore((s) => s.dispatch);
+  const flash = useUIStore((s) => s.flash);
+  const name = (node as { name?: string }).name ?? '';
+  return (
+    <PanelSection title="Slot">
+      <Row label="Name">
+        <DraftField
+          mono
+          value={name}
+          placeholder="default"
+          onCommit={(v) => {
+            const next = cmdPatchNode(useDocumentStore.getState().config, selection, { name: v.trim() || undefined });
+            const errors = validate(next).errors;
+            if (errors.length) return flash(errors[0]);
+            dispatch(() => next);
+          }}
+        />
+      </Row>
+      <p className="text-[10px] leading-relaxed text-white/30">
+        {name
+          ? `Instances fill it with slots: { ${name}: [...] }.`
+          : "The default slot holds an instance's children (or the page, when this component is a layout)."}
+      </p>
+    </PanelSection>
   );
 }

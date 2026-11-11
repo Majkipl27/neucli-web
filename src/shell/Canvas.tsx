@@ -15,6 +15,7 @@ import { useCanvasInteractions } from '../canvas/useCanvasInteractions';
 import { setCanvasDocument } from '../canvas/registry';
 import type { Node } from '../document/types';
 import ErrorBoundary from './ErrorBoundary';
+import { rootsOf, scopeComponent } from '../document/scope';
 
 const PAD = 64;
 const PAN_ACTIVATION_PX = 4;
@@ -62,9 +63,17 @@ export default function Canvas() {
   const [doc, setDoc] = useState<Document | null>(null);
   const [pageHeight, setPageHeight] = useState(VIEWPORT.height);
 
-  const page = rendered.pages[pageIndex] ?? rendered.pages[0];
+  const lastPage = useSelectionStore((s) => s.lastPage);
+  // A main component open on the canvas (negative scope), or a page.
+  const componentName = scopeComponent(config, pageIndex);
+  const renderedComponent = componentName && rendered.components?.[componentName]?.root ? componentName : null;
+  const page = pageIndex < 0 ? null : rendered.pages[pageIndex] ?? rendered.pages[0];
+  // The component was deleted or renamed away under us: go back to the page.
+  useEffect(() => {
+    if (pageIndex < 0 && !componentName) setPage(Math.min(lastPage, config.pages.length - 1));
+  }, [pageIndex, componentName, lastPage, config.pages.length, setPage]);
   const selectedKey = selection && selection.pageIndex === pageIndex ? pathKey(selection.path) : null;
-  const selectedNode = selection ? getAt(config.pages[pageIndex]?.sections ?? [], selection.path) : null;
+  const selectedNode = selection ? getAt(rootsOf(config, pageIndex), selection.path) : null;
   const selectedKeys = selection && selection.pageIndex === pageIndex
     ? (selectedPathList.length ? selectedPathList : [selection.path]).map(pathKey)
     : [];
@@ -252,6 +261,21 @@ export default function Canvas() {
           >
             +
           </button>
+          {componentName && (
+            <div className="ml-2 flex items-center rounded-t bg-violet-500/25 text-violet-100 shadow-sm">
+              <span className="px-3 py-1.5 text-[11px] font-medium" title="Editing the main component: every instance follows">
+                <span className="mr-1.5 text-violet-300">&#x25C6;</span>{componentName}
+              </span>
+              <button
+                type="button"
+                title="Back to the page"
+                onClick={() => setPage(Math.min(lastPage, config.pages.length - 1))}
+                className="rounded-tr px-2 py-1.5 text-[11px] text-violet-200/60 hover:bg-violet-500/30 hover:text-white"
+              >
+                &#x2715;
+              </button>
+            </div>
+          )}
           <BreakpointSwitch value={breakpoint} onChange={setBreakpoint} />
         </div>
 
@@ -267,10 +291,12 @@ export default function Canvas() {
               style={{ width: VIEWPORT.width, height: pageHeight, transform: `scale(${zoom})`, transformOrigin: '0 0' }}
             >
               <ErrorBoundary resetKey={pageIndex} label="Canvas failed to render">
-                {page && (
+                {(page || renderedComponent) && (
                   <CanvasFrame
                     config={rendered}
                     page={page}
+                    component={renderedComponent}
+                    dropSlots={interactions.moving}
                     width={VIEWPORT.width}
                     viewportHeight={VIEWPORT.height}
                     onHeight={setPageHeight}

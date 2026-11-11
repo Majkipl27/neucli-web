@@ -23,6 +23,8 @@ import {
 } from './interaction';
 import type { Drop, Rect, TextTarget } from './interaction';
 import { notifyLayout } from './layoutBus';
+import { rootsOf, scopeComponent, withRoots } from '../document/scope';
+import { boundProp, setPropDefault } from '../document/components';
 
 const DRAG_START_PX = 4; // on screen
 const SPRING_MS = 500;
@@ -54,6 +56,8 @@ export interface Interactions {
   renderKey: number;
   /** Live size while resizing, page px. */
   resizing: { w: number; h: number } | null;
+  /** A move drag is in progress (the canvas shows drop targets for empty named slots). */
+  moving: boolean;
 }
 
 export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefObject<HTMLDivElement | null>): Interactions {
@@ -66,6 +70,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
   const [editing, setEditing] = useState(false);
   const [renderKey, setRenderKey] = useState(0);
   const [resizing, setResizing] = useState<{ w: number; h: number } | null>(null);
+  const [moving, setMoving] = useState(false);
 
   const zoom = () => useUIStore.getState().zoom;
   const pageIndex = () => useSelectionStore.getState().pageIndex;
@@ -90,9 +95,14 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     setEditing(false);
     if (commit && text !== shown) {
       const sel = { pageIndex: pageIndex(), path: target.path };
-      useDocumentStore.getState().dispatch((c) =>
-        target.kind === 'content' ? patchNode(c, sel, { content: text }) : setInstanceProp(c, sel, target.prop, text),
-      );
+      useDocumentStore.getState().dispatch((c) => {
+        if (target.kind === 'prop') return setInstanceProp(c, sel, target.prop, text);
+        // In a main component, text bound to a prop (`{title}`) edits that prop's default.
+        const component = scopeComponent(c, sel.pageIndex);
+        const bound = component ? boundProp(getAt(rootsOf(c, sel.pageIndex), sel.path)) : null;
+        if (component && bound) return setPropDefault(c, component, bound, text);
+        return patchNode(c, sel, { content: text });
+      });
     }
     // The browser edited React's DOM; rebuild the page from the document.
     setRenderKey((k) => k + 1);
@@ -144,7 +154,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     if (editRequest === 0 || !doc) return;
     const sel = useSelectionStore.getState().selection;
     if (!sel) return;
-    const node = getAt(rawConfig().pages[sel.pageIndex]?.sections ?? [], sel.path);
+    const node = getAt(rootsOf(rawConfig(), sel.pageIndex), sel.path);
     const el = elementFor(doc, sel.path) as HTMLElement | null;
     if (node && el && hasEditableContent(node)) startEdit({ kind: 'content', path: sel.path, el });
   }, [editRequest, doc, startEdit]);
@@ -187,6 +197,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     if (g?.kind === 'move') clearTimeout(g.timer);
     const cached = dropCache.current;
     dropCache.current = null;
+    setMoving(false);
     setDrop(null);
     setDropInvalid(false);
     if (!commit || !cached?.result) return;
@@ -234,10 +245,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
       if (vertical) out = setStyle(out, bp, 'height', h);
       return out;
     };
-    useDocumentStore.getState().dispatch((c) => ({
-      ...c,
-      pages: c.pages.map((p, i) => (i === pageIndex() ? { ...p, sections: updateAt(p.sections, g.path, resize) } : p)),
-    }));
+    useDocumentStore.getState().dispatch((c) => withRoots(c, pageIndex(), (s) => updateAt(s, g.path, resize)));
     notifyLayout();
   }, [resizeTo]);
 
@@ -274,6 +282,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
       }
       const move: Gesture = { kind: 'move', paths, sibling: null, siblingSince: 0, last: { x, y } };
       gesture.current = move;
+      setMoving(true);
       useUIStore.getState().setHoverKey(null);
       computeDrop(move, x, y);
       return;
@@ -313,7 +322,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
 
     const sel = useSelectionStore.getState();
     const config = rawConfig();
-    const sections = config.pages[sel.pageIndex]?.sections ?? [];
+    const sections = rootsOf(config, sel.pageIndex);
 
     if (p.type === 'down') {
       if (p.button !== 0) return;
@@ -392,5 +401,5 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     };
   }, [toPage, handleMove, handleUp, endMove]);
 
-  return { onPointer, onHandleDown, drop, dropInvalid, editing, renderKey, resizing };
+  return { onPointer, onHandleDown, drop, dropInvalid, editing, renderKey, resizing, moving };
 }

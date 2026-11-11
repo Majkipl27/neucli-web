@@ -8,6 +8,7 @@ import type { DropTarget } from '../store/useUI';
 import { moveSibling as cmdMoveSibling, moveTo as cmdMoveTo } from '../document/commands';
 import { pathEquals, pathKey } from '../document/tree';
 import { acceptsChildren, iconFor, labelFor } from '../document/palette';
+import { rootsOf } from '../document/scope';
 
 function cls(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
@@ -20,7 +21,8 @@ export default function LayerTree() {
   const select = useSelectionStore((s) => s.select);
 
   const dispatch = useDocumentStore((s) => s.dispatch);
-  const nodes = useDocumentStore((s) => s.config.pages[pageIndex]?.sections ?? []);
+  const config = useDocumentStore((s) => s.config);
+  const nodes = React.useMemo(() => rootsOf(config, pageIndex), [config, pageIndex]);
 
   const dragFrom = useUIStore((s) => s.dragFrom);
   const dropTarget = useUIStore((s) => s.dropTarget);

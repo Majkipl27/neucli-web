@@ -41,6 +41,8 @@ interface UIState {
   yamlOpen: boolean;
 
   error: string | null;
+  /** 'info' for confirmations (e.g. "Created Card"), 'error' for refusals. */
+  errorKind: 'error' | 'info';
 
   /** Which page's inline-edit form is open in the left sidebar. */
   editingPageIndex: number | null;
@@ -61,6 +63,9 @@ interface UIState {
   breakpoint: Breakpoint;
   /** In-app confirm dialog (native dialogs can't be answered in every host). */
   confirm: ConfirmRequest | null;
+  /** The Create component dialog is open. */
+  createComponentOpen: boolean;
+  setCreateComponentOpen: (open: boolean) => void;
 
   startDrag: (path: Path) => void;
   setDropTarget: (target: DropTarget | null) => void;
@@ -76,7 +81,7 @@ interface UIState {
   requestFocus: () => void;
   requestEdit: () => void;
   /** Show a short message on the canvas (e.g. why a drop was refused). */
-  flash: (message: string) => void;
+  flash: (message: string, kind?: 'error' | 'info') => void;
 
   setBreakpoint: (bp: Breakpoint) => void;
   askConfirm: (request: ConfirmRequest) => void;
@@ -111,6 +116,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   dropTarget: null,
   yamlOpen: false,
   error: null,
+  errorKind: 'error',
   editingPageIndex: null,
   hoverKey: null,
   fitRequest: 0,
@@ -119,6 +125,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   zoom: 1,
   breakpoint: 'desktop',
   confirm: null,
+  createComponentOpen: false,
+  setCreateComponentOpen: (createComponentOpen) => set({ createComponentOpen }),
 
   startDrag: (path) => set({ dragFrom: path, dropTarget: null }),
   setDropTarget: (target) => set({ dropTarget: target }),
@@ -127,14 +135,14 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleYaml: () => set((s) => ({ yamlOpen: !s.yamlOpen })),
   setYamlOpen: (yamlOpen) => set({ yamlOpen }),
 
-  setError: (error) => set({ error }),
+  setError: (error) => set({ error, errorKind: 'error' }),
   setEditingPageIndex: (editingPageIndex) => set({ editingPageIndex }),
   setHoverKey: (hoverKey) => set({ hoverKey }),
   requestFit: () => set((s) => ({ fitRequest: s.fitRequest + 1 })),
   requestFocus: () => set((s) => ({ focusRequest: s.focusRequest + 1 })),
   requestEdit: () => set((s) => ({ editRequest: s.editRequest + 1 })),
-  flash: (message) => {
-    set({ error: message });
+  flash: (message, kind = 'error') => {
+    set({ error: message, errorKind: kind });
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => {
       if (get().error === message) set({ error: null });

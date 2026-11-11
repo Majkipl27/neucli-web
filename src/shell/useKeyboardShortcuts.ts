@@ -14,6 +14,8 @@ import { canvasGestureActive } from '../canvas/useCanvasInteractions';
 import { getClipboardNode, setClipboardNode } from '../document/clipboard';
 import { exportConfig, filenameFor } from '../document/io';
 import type { Node, Path, Selection } from '../document/types';
+import { rootsOf } from '../document/scope';
+import { openCreateComponent } from './componentActions';
 
 /**
  * Returns true when the user is typing in a field; prevents shortcuts from
@@ -30,7 +32,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 /** Serialize the currently-selected node into the in-memory clipboard. */
 function copySelection(selection: Selection): Node | null {
   const config = useDocumentStore.getState().config;
-  const node = getAt(config.pages[selection.pageIndex]?.sections ?? [], selection.path);
+  const node = getAt(rootsOf(config, selection.pageIndex), selection.path);
   if (!node) return null;
   setClipboardNode(node);
   return node;
@@ -44,7 +46,7 @@ function pasteNode(node: Node): void {
   const { selection, pageIndex, select } = useSelectionStore.getState();
   let path: Path | null = null;
   useDocumentStore.getState().dispatch((c) => {
-    const sections = c.pages[pageIndex]?.sections ?? [];
+    const sections = rootsOf(c, pageIndex);
     if (selection && selection.pageIndex === pageIndex) {
       const idx = selection.path[selection.path.length - 1] as number;
       path = [...selection.path.slice(0, -1), idx + 1];
@@ -109,6 +111,7 @@ function downloadYaml(): void {
  * - Delete / Backspace: delete the selected nodes (only when not typing)
  * - Enter / Shift+Enter: select first child / parent; Enter on text edits it
  * - Ctrl/Cmd+G: wrap the selected siblings in a frame; Ctrl/Cmd+Shift+G: unwrap a frame
+ * - Ctrl/Cmd+Alt+K: create a component from the selection
  * - Escape: close YAML drawer if open, otherwise select the parent, or clear at the top
  */
 export function useKeyboardShortcuts(): void {
@@ -121,6 +124,13 @@ export function useKeyboardShortcuts(): void {
         e.preventDefault();
         if (e.shiftKey) useDocumentStore.getState().redo();
         else useDocumentStore.getState().undo();
+        return;
+      }
+
+      // Alt changes e.key on macOS (Alt+K types a symbol), so match the physical key.
+      if (mod && e.altKey && e.code === 'KeyK') {
+        e.preventDefault();
+        openCreateComponent();
         return;
       }
 
@@ -265,7 +275,7 @@ export function useKeyboardShortcuts(): void {
       if (e.key === 'Enter' && !mod) {
         e.preventDefault();
         const config = useDocumentStore.getState().config;
-        const sections = config.pages[selection.pageIndex]?.sections ?? [];
+        const sections = rootsOf(config, selection.pageIndex);
         const node = getAt(sections, selection.path);
         if (!node) return;
         if (e.shiftKey) {

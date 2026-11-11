@@ -14,7 +14,10 @@ import type { Path, Selection } from '../document/types';
 import { pathEquals } from '../document/tree';
 
 interface SelectionState {
+  /** What the canvas edits: a page index, or a negative component scope (see document/scope.ts). */
   pageIndex: number;
+  /** The page to go back to after editing a main component. */
+  lastPage: number;
   selection: Selection | null;
   paths: Path[];
 
@@ -30,11 +33,12 @@ interface SelectionState {
 
 export const useSelectionStore = create<SelectionState>((set, get) => ({
   pageIndex: 0,
+  lastPage: 0,
   selection: null,
   paths: [],
 
   setPage: (index) => {
-    set({ pageIndex: index, selection: null, paths: [] });
+    set({ pageIndex: index, selection: null, paths: [], ...(index >= 0 ? { lastPage: index } : {}) });
   },
   select: (selection) => {
     set({ selection, paths: selection ? [selection.path] : [] });

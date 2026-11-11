@@ -10,6 +10,7 @@ import {
   useKeyboardShortcuts,
   useDocumentTitle,
 } from './shell';
+import CreateComponentDialog from './shell/CreateComponentDialog';
 
 /** In-app confirm: native dialogs block the page and can't be answered in every host. */
 function ConfirmDialog() {
@@ -77,6 +78,7 @@ export default function App() {
 
         {yamlOpen && <YamlDrawer />}
         <ConfirmDialog />
+        <CreateComponentDialog />
       </div>
     </ErrorBoundary>
   );
