@@ -51,9 +51,10 @@ pnpm build
 
 The editor reads and writes the same YAML format as the CLI. The format, its validation and every class decision come from the CLI repo as `neucli/core`, linked from `../neucli`, so clone both repos side by side. The plan lives in `../neucli/ROADMAP.md`.
 
-- `src/document/`: types, tree operations (paths reach into named slots), commands, YAML import/export, insert palette, bundled examples.
+- `src/document/`: types, tree operations (paths reach into named slots), commands, YAML import/export, insert palette, bundled examples, breakpoint-aware style reads/writes (`style.ts`), detach (`detach.ts`) and theme token references (`tokens.ts`).
 - `src/store/`: zustand stores (document with undo/redo, selection, UI) and `useValidated`, the document as core validates it.
 - `src/canvas/`: the page rendered in an iframe with Tailwind v4 compiled in the browser, and the selection/hover overlay.
+- `src/panel/`: the auto layout panel (`StylePanel`) and its controls: scrubbable number fields, segmented buttons, the color picker.
 - `src/shell/`: editor chrome (Toolbar, LeftSidebar, LayerTree, Canvas, RightPanel, YamlDrawer).
 
 ## License

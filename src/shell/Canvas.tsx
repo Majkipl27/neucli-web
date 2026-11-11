@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDocumentStore } from '../store/useDocument';
 import { useSelectionStore } from '../store/useSelection';
-import { useUIStore, ZOOM_MAX, ZOOM_MIN } from '../store/useUI';
+import { useUIStore, VIEWPORTS, ZOOM_MAX, ZOOM_MIN } from '../store/useUI';
+import { styleAt } from '../document/style';
+import type { Breakpoint } from 'neucli/core';
 import { useValidated } from '../store/useValidated';
 import { addPage as cmdAddPage } from '../document/commands';
 import { getAt, pathKey } from '../document/tree';
@@ -14,8 +16,6 @@ import { setCanvasDocument } from '../canvas/registry';
 import type { Node } from '../document/types';
 import ErrorBoundary from './ErrorBoundary';
 
-/** Simulated desktop viewport. Breakpoints in the page see this width. */
-const VIEWPORT = { width: 1280, height: 800 };
 const PAD = 64;
 const PAN_ACTIVATION_PX = 4;
 
@@ -50,6 +50,10 @@ export default function Canvas() {
   const fitRequest = useUIStore((s) => s.fitRequest);
   const focusRequest = useUIStore((s) => s.focusRequest);
   const requestFit = useUIStore((s) => s.requestFit);
+  const breakpoint = useUIStore((s) => s.breakpoint);
+  const setBreakpoint = useUIStore((s) => s.setBreakpoint);
+  /** Simulated viewport for the active breakpoint. The page's media queries see this width. */
+  const VIEWPORT = VIEWPORTS[breakpoint];
 
   const scrollerRef = useRef<HTMLElement | null>(null);
   const sizerRef = useRef<HTMLDivElement | null>(null);
@@ -71,7 +75,7 @@ export default function Canvas() {
   const sizeLabel = selectedNode && box
     ? interactions.resizing
       ? `${interactions.resizing.w} × ${interactions.resizing.h}`
-      : `${sizeText(selectedNode, 'width', box.w)} × ${sizeText(selectedNode, 'height', box.h)}`
+      : `${sizeText(selectedNode, breakpoint, 'width', box.w)} × ${sizeText(selectedNode, breakpoint, 'height', box.h)}`
     : null;
 
   // --- zoom helpers -----------------------------------------------------------
@@ -118,7 +122,7 @@ export default function Canvas() {
       scroller.scrollTop = 0;
       scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
     });
-  }, [pageIndex, fitRequest, setZoom]);
+  }, [pageIndex, fitRequest, setZoom, VIEWPORT.width]);
 
   // Zoom to selection (Shift+2).
   useEffect(() => {
@@ -248,9 +252,7 @@ export default function Canvas() {
           >
             +
           </button>
-          <span className="ml-auto pb-1.5 font-mono text-[10px] text-white/25">
-            {VIEWPORT.width} × {VIEWPORT.height} desktop
-          </span>
+          <BreakpointSwitch value={breakpoint} onChange={setBreakpoint} />
         </div>
 
         <div className="flex w-max min-w-full justify-center" style={{ padding: PAD, paddingBottom: "40vh" }}>
@@ -319,9 +321,35 @@ export default function Canvas() {
   );
 }
 
+/** Desktop / tablet / phone. Switching resizes the canvas and routes panel edits to that breakpoint. */
+function BreakpointSwitch({ value, onChange }: { value: Breakpoint; onChange: (bp: Breakpoint) => void }) {
+  return (
+    <div className="ml-auto flex items-center gap-2 pb-1">
+      <div className="flex h-6 items-center gap-px rounded bg-white/[0.06] p-px">
+        {(Object.keys(VIEWPORTS) as Breakpoint[]).map((bp) => (
+          <button
+            key={bp}
+            type="button"
+            title={`${VIEWPORTS[bp].label}: ${VIEWPORTS[bp].width}px${bp === 'desktop' ? '' : `, edits go to responsive.${bp}`}`}
+            onClick={() => onChange(bp)}
+            className={`h-full rounded-[3px] px-2 text-[11px] transition ${
+              bp === value ? (bp === 'desktop' ? 'bg-white/15 text-white' : 'bg-sky-500/25 text-sky-100') : 'text-white/45 hover:text-white/80'
+            }`}
+          >
+            {VIEWPORTS[bp].label}
+          </button>
+        ))}
+      </div>
+      <span className="font-mono text-[10px] text-white/25">
+        {VIEWPORTS[value].width} × {VIEWPORTS[value].height}
+      </span>
+    </div>
+  );
+}
+
 /** Figma-style size readout: a fixed number, Fill, Hug, or the measured size when unset. */
-function sizeText(node: Node, axis: 'width' | 'height', measured: number): string {
-  const v = (node as unknown as Record<string, unknown>)[axis];
+function sizeText(node: Node, bp: Breakpoint, axis: 'width' | 'height', measured: number): string {
+  const v = (styleAt(node, bp) as Record<string, unknown>)[axis];
   if (v === 'fill') return 'Fill';
   if (v === 'hug') return 'Hug';
   if (typeof v === 'number') return String(v);

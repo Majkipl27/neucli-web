@@ -11,16 +11,31 @@ import {
   setMeta as cmdSetMeta,
   setToken,
   deleteToken,
-  renameToken,
 } from '../document/commands';
+import { renameTokenEverywhere, tokenUses } from '../document/tokens';
 import type { Config } from '../document/types';
 
 const cmdSetThemeColor = (c: Config, k: string, v: string) => setToken(c, 'colors', k, v);
-const cmdDeleteThemeColor = (c: Config, k: string) => deleteToken(c, 'colors', k);
-const cmdRenameThemeColor = (c: Config, a: string, b: string) => renameToken(c, 'colors', a, b);
 const cmdSetThemeFont = (c: Config, k: string, v: string) => setToken(c, 'fonts', k, v);
-const cmdDeleteThemeFont = (c: Config, k: string) => deleteToken(c, 'fonts', k);
-const cmdRenameThemeFont = (c: Config, a: string, b: string) => renameToken(c, 'fonts', a, b);
+
+type TokenKind = 'colors' | 'fonts';
+
+/** Rename a token and every reference to it; refuse a name that's already taken. */
+function renameTokenCmd(kind: TokenKind, from: string, to: string) {
+  const { config, dispatch } = useDocumentStore.getState();
+  if (config.theme?.[kind]?.[to] !== undefined) return useUIStore.getState().flash(`"${to}" already exists.`);
+  dispatch((c) => renameTokenEverywhere(c, kind, from, to));
+}
+
+/** Delete a token only when nothing uses it, so the document never stops validating. */
+function deleteTokenCmd(kind: TokenKind, name: string) {
+  const { config, dispatch } = useDocumentStore.getState();
+  const uses = tokenUses(config, kind, name);
+  if (uses > 0) {
+    return useUIStore.getState().flash(`"${name}" is used ${uses} time${uses === 1 ? '' : 's'}. Change those first, or rename the token.`);
+  }
+  dispatch((c) => deleteToken(c, kind, name));
+}
 import LayerTree from './LayerTree';
 
 // ─────────────────────────────────────────────
@@ -249,13 +264,11 @@ function DesignTokens() {
             key={key}
             name={key}
             value={typeof val === 'string' ? val : '#000000'}
-            onChangeName={(newName) =>
-              dispatch((c) => cmdRenameThemeColor(c, key, newName))
-            }
+            onChangeName={(newName) => renameTokenCmd('colors', key, newName)}
             onChangeValue={(v) =>
               dispatch((c) => cmdSetThemeColor(c, key, v), { mode: 'coalesce', group: `color:${key}` })
             }
-            onDelete={() => dispatch((c) => cmdDeleteThemeColor(c, key))}
+            onDelete={() => deleteTokenCmd('colors', key)}
           />
         ))}
         {addingColor && (
@@ -284,13 +297,11 @@ function DesignTokens() {
             key={key}
             name={key}
             value={typeof val === 'string' ? val : ''}
-            onChangeName={(newName) =>
-              dispatch((c) => cmdRenameThemeFont(c, key, newName))
-            }
+            onChangeName={(newName) => renameTokenCmd('fonts', key, newName)}
             onChangeValue={(v) =>
               dispatch((c) => cmdSetThemeFont(c, key, v), { mode: 'coalesce', group: `font:${key}` })
             }
-            onDelete={() => dispatch((c) => cmdDeleteThemeFont(c, key))}
+            onDelete={() => deleteTokenCmd('fonts', key)}
           />
         ))}
         {addingFont && (
@@ -359,20 +370,24 @@ function ColorTokenRow({
 
   return (
     <div className="group flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.03]">
-      <input
-        type="color"
-        value={value}
-        onChange={(e) => onChangeValue(e.target.value)}
-        className="h-5 w-5 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
-      />
+      <label className="relative h-4 w-4 shrink-0 cursor-pointer overflow-hidden rounded-[3px] ring-1 ring-inset ring-white/15" style={{ background: value }} title="Pick a color">
+        <input
+          type="color"
+          value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
+          onChange={(e) => onChangeValue(e.target.value)}
+          className="absolute inset-0 cursor-pointer opacity-0"
+        />
+      </label>
       {editingName ? (
         <input
           autoFocus
+          onFocus={(e) => e.target.select()}
           className="min-w-0 flex-1 rounded bg-white/10 px-1 text-[11px] text-white/90 outline-none"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitName}
           onKeyDown={(e) => {
+            e.stopPropagation();
             if (e.key === 'Enter') commitName();
             if (e.key === 'Escape') { setDraft(name); setEditingName(false); }
           }}
@@ -387,12 +402,13 @@ function ColorTokenRow({
           {name}
         </button>
       )}
-      <span
-        className="shrink-0 cursor-default font-mono text-[9px] text-white/25"
-        title={`--nc-${name}`}
-      >
-        --nc-{name}
-      </span>
+      <input
+        className="w-[72px] shrink-0 rounded bg-transparent px-1 font-mono text-[10px] text-white/45 outline-none hover:bg-white/5 focus:bg-white/10 focus:text-white/85"
+        value={value}
+        title={`CSS color. Use it as fill: ${name}, color: ${name}/60, or classes like bg-${name}`}
+        onChange={(e) => onChangeValue(e.target.value)}
+        onKeyDown={(e) => e.stopPropagation()}
+      />
       <button
         type="button"
         onClick={onDelete}
@@ -434,11 +450,13 @@ function FontTokenRow({
       {editingName ? (
         <input
           autoFocus
+          onFocus={(e) => e.target.select()}
           className="min-w-0 w-[60px] rounded bg-white/10 px-1 text-[11px] text-white/90 outline-none"
           value={draftName}
           onChange={(e) => setDraftName(e.target.value)}
           onBlur={commitName}
           onKeyDown={(e) => {
+            e.stopPropagation();
             if (e.key === 'Enter') commitName();
             if (e.key === 'Escape') { setDraftName(name); setEditingName(false); }
           }}
@@ -513,6 +531,7 @@ function NewTokenRow({
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
+            e.stopPropagation();
           if (e.key === 'Enter') commit();
           if (e.key === 'Escape') onCancel();
         }}
@@ -524,6 +543,7 @@ function NewTokenRow({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
+            e.stopPropagation();
             if (e.key === 'Enter') commit();
             if (e.key === 'Escape') onCancel();
           }}

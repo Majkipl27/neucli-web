@@ -5,6 +5,21 @@
 
 import { create } from 'zustand';
 import type { Path } from '../document/types';
+import type { Breakpoint } from 'neucli/core';
+
+/** Simulated viewport per breakpoint. Tablet sits below 1024 (max-lg), phone below 768 (max-md). */
+export const VIEWPORTS: Record<Breakpoint, { width: number; height: number; label: string }> = {
+  desktop: { width: 1280, height: 800, label: 'Desktop' },
+  tablet: { width: 834, height: 1112, label: 'Tablet' },
+  phone: { width: 390, height: 844, label: 'Phone' },
+};
+
+export interface ConfirmRequest {
+  message: string;
+  /** Label of the confirming button, e.g. "Replace". */
+  action: string;
+  onConfirm: () => void;
+}
 
 export interface DropTarget {
   parentPath: Path;
@@ -42,6 +57,11 @@ interface UIState {
   /** Canvas zoom factor; 1 = 100%. */
   zoom: number;
 
+  /** Breakpoint the canvas shows and panel edits write to. */
+  breakpoint: Breakpoint;
+  /** In-app confirm dialog (native dialogs can't be answered in every host). */
+  confirm: ConfirmRequest | null;
+
   startDrag: (path: Path) => void;
   setDropTarget: (target: DropTarget | null) => void;
   endDrag: () => void;
@@ -57,6 +77,10 @@ interface UIState {
   requestEdit: () => void;
   /** Show a short message on the canvas (e.g. why a drop was refused). */
   flash: (message: string) => void;
+
+  setBreakpoint: (bp: Breakpoint) => void;
+  askConfirm: (request: ConfirmRequest) => void;
+  closeConfirm: () => void;
 
   setZoom: (zoom: number) => void;
   zoomIn: () => void;
@@ -93,6 +117,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   focusRequest: 0,
   editRequest: 0,
   zoom: 1,
+  breakpoint: 'desktop',
+  confirm: null,
 
   startDrag: (path) => set({ dragFrom: path, dropTarget: null }),
   setDropTarget: (target) => set({ dropTarget: target }),
@@ -114,6 +140,10 @@ export const useUIStore = create<UIState>((set, get) => ({
       if (get().error === message) set({ error: null });
     }, 2600);
   },
+
+  setBreakpoint: (breakpoint) => set((s) => (s.breakpoint === breakpoint ? s : { breakpoint, fitRequest: s.fitRequest + 1 })),
+  askConfirm: (confirm) => set({ confirm }),
+  closeConfirm: () => set({ confirm: null }),
 
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   zoomIn: () => set({ zoom: nextStep(get().zoom, 1) }),

@@ -65,9 +65,14 @@ export default function Toolbar() {
   }
 
   function handleOpen(id: string) {
-    if (!window.confirm('Replace the current document? Unsaved changes are lost (export first if you need them).')) return;
-    clearPersistedConfig();
-    load(id === 'blank' ? BLANK_CONFIG : loadExample(id));
+    useUIStore.getState().askConfirm({
+      message: 'Replace the current document? Unsaved changes are lost (export first if you need them).',
+      action: 'Replace',
+      onConfirm: () => {
+        clearPersistedConfig();
+        load(id === 'blank' ? BLANK_CONFIG : loadExample(id));
+      },
+    });
   }
 
   function insert(type: string) {

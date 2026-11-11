@@ -15,13 +15,17 @@ import {
   updatePage as cmdUpdatePage,
 } from '../document/commands';
 import ErrorBoundary from './ErrorBoundary';
-import { canvasDocument } from '../canvas/registry';
-import { elementFor, rectOf } from '../canvas/interaction';
+import StylePanel from '../panel/StylePanel';
+import { Section as PanelSection, TextField, Row } from '../panel/controls';
+import { detachInstance } from '../document/detach';
+import { useUIStore, VIEWPORTS } from '../store/useUI';
+import { STYLE_KEYS } from 'neucli/core';
+import type { InstanceNode } from '../document/types';
 
 /**
- * Minimal properties panel for now: content fields per node type, and the
- * node's YAML for everything else (styles included). The real auto layout
- * panel is Phase 4.
+ * Properties of the selection: content fields, then the structured style
+ * controls (StylePanel) for the active breakpoint, then layer details and the
+ * node's YAML under Advanced.
  */
 export default function RightPanel() {
   const config = useDocumentStore((s) => s.config);
@@ -65,6 +69,8 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
   const node = any as PrimitiveNode;
   const config = useDocumentStore((s) => s.config);
   const dispatch = useDocumentStore((s) => s.dispatch);
+  const bp = useUIStore((s) => s.breakpoint);
+  const flash = useUIStore((s) => s.flash);
   const key = pathKey(selection.path);
 
   const patch = (field: string, value: unknown) =>
@@ -72,142 +78,106 @@ function NodePanel({ node: any, selection, onDelete }: { node: Node; selection: 
   /** Optional string fields: empty removes the key. */
   const optional = (field: string) => (v: string) => patch(field, v === '' ? undefined : v);
 
-  const def = isInstance(any) ? config.components?.[any.type] : undefined;
+  const instance = isInstance(any);
+  const def = instance ? config.components?.[any.type] : undefined;
+  const hasOverrides = instance && (STYLE_KEYS.some((k) => k in (any as object)) || !!(any as InstanceNode).responsive);
+
+  function detach() {
+    const result = detachInstance(config, any as InstanceNode);
+    if (!result.ok) return flash(result.error);
+    const next = cmdReplaceNode(config, selection, result.node);
+    const errors = validate(next).errors;
+    if (errors.length) return flash(`Can't detach: ${errors[0]}`);
+    dispatch(() => next);
+  }
+
+  function resetOverrides() {
+    dispatch((c) => {
+      const current = getAt(c.pages[selection.pageIndex]?.sections ?? [], selection.path);
+      if (!current) return null;
+      const out: Record<string, unknown> = { ...current };
+      for (const k of STYLE_KEYS) delete out[k];
+      delete out.responsive;
+      return cmdReplaceNode(c, selection, out as unknown as Node);
+    });
+  }
 
   return (
     <>
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2.5">
-        <span className={`text-[12px] ${isInstance(any) ? 'text-violet-300' : 'text-white/50'}`}>{iconFor(any)}</span>
+      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
+        <span className={`text-[12px] ${instance ? 'text-violet-300' : 'text-white/50'}`}>{iconFor(any)}</span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-medium text-white/90">{labelFor(any)}</div>
-          <div className="text-[10px] text-white/35">{isInstance(any) ? `instance of ${any.type}` : any.type}</div>
+          <div className="text-[10px] text-white/35">{instance ? `instance of ${any.type}` : any.type}</div>
         </div>
-        <button
-          type="button"
-          onClick={onDelete}
-          title="Delete (Del)"
-          className="rounded px-1.5 py-0.5 text-[11px] text-red-400/60 transition hover:bg-red-500/10 hover:text-red-400"
-        >
+        {instance && (
+          <button type="button" onClick={detach} title="Detach instance: turn it into plain layers"
+            className="rounded px-1.5 py-0.5 text-[11px] text-violet-300/70 transition hover:bg-violet-500/10 hover:text-violet-200">
+            Detach
+          </button>
+        )}
+        <button type="button" onClick={onDelete} title="Delete (Del)"
+          className="rounded px-1.5 py-0.5 text-[11px] text-red-400/60 transition hover:bg-red-500/10 hover:text-red-400">
           Delete
         </button>
       </div>
 
-      <div className="flex-1 overflow-auto">
-        <Section title="Content">
-          {node.type === 'text' && (
-            <>
-              <TextArea label="Content" value={String(node.content)} onChange={(v) => patch('content', v)} />
-              <Field label="Tag" value={node.tag ?? ''} placeholder="p" onChange={optional('tag')} />
-            </>
-          )}
-          {node.type === 'link' && (
-            <>
-              <Field label="Href" value={node.href} onChange={(v) => patch('href', v)} />
-              {node.content !== undefined && <Field label="Text" value={String(node.content)} onChange={(v) => patch('content', v)} />}
-              <Check label="Open in new tab" checked={!!node.newTab} onChange={(v) => patch('newTab', v || undefined)} />
-            </>
-          )}
-          {node.type === 'image' && (
-            <>
-              <Field label="Source" value={node.src} onChange={(v) => patch('src', v)} />
-              <Field label="Alt text" value={node.alt ?? ''} onChange={optional('alt')} />
-            </>
-          )}
-          {node.type === 'input' && (
-            <>
-              <Field label="Field name" value={node.field ?? ''} onChange={optional('field')} />
-              <Field label="Placeholder" value={node.placeholder ?? ''} onChange={optional('placeholder')} />
-              <Field label="Input type" value={node.inputType ?? ''} placeholder="text" onChange={optional('inputType')} />
-            </>
-          )}
-          {node.type === 'frame' && <Field label="Tag" value={node.tag ?? ''} placeholder="div" onChange={optional('tag')} />}
-          {def && <InstanceProps node={any} props={(def.props ?? {}) as Record<string, PropDef | string>} selection={selection} />}
-        </Section>
+      {bp !== 'desktop' && (
+        <div className="flex items-center gap-1.5 border-b border-white/10 bg-sky-500/[0.07] px-3 py-1.5 text-[11px] text-sky-200/80">
+          <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+          Editing {VIEWPORTS[bp].label.toLowerCase()} ({VIEWPORTS[bp].width}px). Changes apply below {bp === 'tablet' ? '1024' : '768'}px.
+        </div>
+      )}
 
+      <div className="flex-1 overflow-auto">
         {node.type !== 'slot' && (
-          <Section title="Size">
-            <SizeRow axis="width" label="W" node={any} selection={selection} />
-            <SizeRow axis="height" label="H" node={any} selection={selection} />
-          </Section>
+          <PanelSection title={instance ? `${any.type} props` : 'Content'}>
+            {node.type === 'text' && (
+              <>
+                <TextArea label="Text" value={String(node.content)} onChange={(v) => patch('content', v)} />
+                <Row label="Tag"><TextField value={node.tag ?? ''} placeholder="p" onChange={optional('tag')} /></Row>
+              </>
+            )}
+            {node.type === 'link' && (
+              <>
+                <Row label="Href"><TextField value={node.href} onChange={(v) => patch('href', v)} /></Row>
+                {node.content !== undefined && <Row label="Text"><TextField value={String(node.content)} onChange={(v) => patch('content', v)} /></Row>}
+                <Check label="Open in new tab" checked={!!node.newTab} onChange={(v) => patch('newTab', v || undefined)} />
+              </>
+            )}
+            {node.type === 'image' && (
+              <>
+                <Row label="Source"><TextField value={node.src} onChange={(v) => patch('src', v)} /></Row>
+                <Row label="Alt"><TextField value={node.alt ?? ''} onChange={optional('alt')} /></Row>
+              </>
+            )}
+            {node.type === 'input' && (
+              <>
+                <Row label="Name"><TextField value={node.field ?? ''} onChange={optional('field')} /></Row>
+                <Row label="Hint"><TextField value={node.placeholder ?? ''} onChange={optional('placeholder')} /></Row>
+                <Row label="Type"><TextField value={node.inputType ?? ''} placeholder="text" onChange={optional('inputType')} /></Row>
+              </>
+            )}
+            {node.type === 'frame' && <Row label="Tag"><TextField value={node.tag ?? ''} placeholder="div" onChange={optional('tag')} /></Row>}
+            {def && <InstanceProps node={any} props={(def.props ?? {}) as Record<string, PropDef | string>} selection={selection} />}
+            {instance && hasOverrides && (
+              <button type="button" onClick={resetOverrides} className="text-[11px] text-violet-300/70 hover:text-violet-200">
+                Reset all overrides to {any.type}
+              </button>
+            )}
+          </PanelSection>
         )}
 
-        <Section title="Layer">
-          <Field label="Layer name" value={'name' in any ? any.name ?? '' : ''} placeholder={labelFor({ ...any, name: undefined } as Node)} onChange={optional('name')} />
-          <Field label="HTML id" value={'id' in any ? any.id ?? '' : ''} onChange={optional('id')} />
-          <Field label="Extra classes" value={'className' in any ? any.className ?? '' : ''} mono onChange={optional('className')} />
-        </Section>
+        <StylePanel node={any} selection={selection} />
 
-        <Section title="YAML">
+        <PanelSection title="Advanced" open={false}>
+          <Row label="Layer"><TextField value={'name' in any ? any.name ?? '' : ''} placeholder={labelFor({ ...any, name: undefined } as Node)} onChange={optional('name')} /></Row>
+          <Row label="HTML id"><TextField value={'id' in any ? any.id ?? '' : ''} onChange={optional('id')} /></Row>
+          <Row label="Classes"><TextField mono value={'className' in any ? any.className ?? '' : ''} placeholder="hover:… transition" onChange={optional('className')} /></Row>
           <NodeYaml node={any} selection={selection} key={JSON.stringify(any)} />
-        </Section>
+        </PanelSection>
       </div>
     </>
-  );
-}
-
-type SizeMode = 'fixed' | 'hug' | 'fill';
-
-/**
- * Figma's sizing modes for one axis. Fixed writes a px number (starting from
- * the rendered size), Hug and Fill write `hug` / `fill`. Unset shows no mode:
- * the element keeps its natural size from the layout.
- */
-function SizeRow({ axis, label, node, selection }: { axis: 'width' | 'height'; label: string; node: Node; selection: Selection }) {
-  const dispatch = useDocumentStore((s) => s.dispatch);
-  const value = (node as unknown as Record<string, unknown>)[axis];
-  const mode: SizeMode | null = value === 'hug' ? 'hug' : value === 'fill' ? 'fill' : value === undefined ? null : 'fixed';
-  const set = (v: unknown, coalesce = false) =>
-    dispatch((c) => cmdPatchNode(c, selection, { [axis]: v }), coalesce ? { mode: 'coalesce', group: `${axis}:${pathKey(selection.path)}` } : undefined);
-
-  const measured = () => {
-    const r = rectOf(elementFor(canvasDocument(), selection.path));
-    return r ? Math.round(axis === 'width' ? r.w : r.h) : 100;
-  };
-
-  const button = (m: SizeMode, text: string) => (
-    <button
-      type="button"
-      onClick={() => {
-        if (m === mode) return;
-        set(m === 'fixed' ? measured() : m);
-      }}
-      className={`flex-1 rounded px-1.5 py-1 text-[11px] transition ${
-        mode === m ? 'bg-indigo-500/25 text-indigo-200' : 'text-white/45 hover:bg-white/5 hover:text-white/70'
-      }`}
-    >
-      {text}
-    </button>
-  );
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-3 text-[11px] text-white/40">{label}</span>
-      <input
-        className={`${inputCls.replace("w-full", "")} w-[64px] shrink-0 font-mono text-[11px]`}
-        value={typeof value === 'number' || (typeof value === 'string' && mode === 'fixed') ? String(value) : ''}
-        placeholder={mode === 'hug' ? 'Hug' : mode === 'fill' ? 'Fill' : 'Auto'}
-        onChange={(e) => {
-          const raw = e.target.value.trim();
-          if (raw === '') return set(undefined, true);
-          const n = Number(raw);
-          set(Number.isFinite(n) && n > 0 ? Math.round(n) : raw, true);
-        }}
-      />
-      <div className="flex flex-1 gap-0.5 rounded border border-white/10 p-0.5">
-        {button('fixed', 'Fixed')}
-        {button('hug', 'Hug')}
-        {button('fill', 'Fill')}
-      </div>
-      <button
-        type="button"
-        title="Unset (natural size)"
-        onClick={() => set(undefined)}
-        disabled={mode === null}
-        className="rounded px-1 text-[12px] text-white/30 transition hover:text-white/70 disabled:opacity-0"
-      >
-        ×
-      </button>
-    </div>
   );
 }
 
@@ -229,18 +199,17 @@ function InstanceProps({ node, props, selection }: { node: Node; props: Record<s
         if (d.type === 'boolean') {
           return <Check key={prop} label={prop} checked={value === undefined ? d.default === true : !!value} onChange={(v) => set(prop, v)} />;
         }
-        if (d.type === 'number') {
-          return (
-            <Field
-              key={prop}
-              label={prop}
-              value={value === undefined ? '' : String(value)}
-              placeholder={placeholder}
-              onChange={(v) => set(prop, v === '' || Number.isNaN(Number(v)) ? undefined : Number(v))}
+        const text = value === undefined ? '' : String(value);
+        return (
+          <Row key={prop} label={prop}>
+            <TextField
+              value={text}
+              placeholder={placeholder || d.type}
+              mono={d.type === 'number'}
+              onChange={(v) => set(prop, d.type === 'number' ? (v === '' || Number.isNaN(Number(v)) ? undefined : Number(v)) : v)}
             />
-          );
-        }
-        return <Field key={prop} label={`${prop} (${d.type})`} value={value === undefined ? '' : String(value)} placeholder={placeholder} onChange={(v) => set(prop, v)} />;
+          </Row>
+        );
       })}
     </>
   );
@@ -288,7 +257,7 @@ function NodeYaml({ node, selection }: { node: Node; selection: Selection }) {
       />
       {error && <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] text-red-300/90">{error}</pre>}
       <div className="mt-1.5 flex items-center justify-between">
-        <span className="text-[10px] text-white/25">Styles are edited here until the layout panel lands.</span>
+        <span className="text-[10px] text-white/25">Cmd+Enter applies. Only valid documents are applied.</span>
         <button
           type="button"
           disabled={text === original}

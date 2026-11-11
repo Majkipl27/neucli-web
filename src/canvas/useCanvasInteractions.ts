@@ -11,7 +11,8 @@ import { isInstance, validate } from 'neucli/core';
 import { useDocumentStore } from '../store/useDocument';
 import { selectedPaths, useSelectionStore } from '../store/useSelection';
 import { useUIStore } from '../store/useUI';
-import { getAt, isAncestorOrSelf, pathEquals, pathKey } from '../document/tree';
+import { getAt, isAncestorOrSelf, pathEquals, pathKey, updateAt } from '../document/tree';
+import { setStyle } from '../document/style';
 import { moveMany, normalizePaths } from '../document/multi';
 import { patchNode, setInstanceProp } from '../document/commands';
 import type { Config, Node, Path } from '../document/types';
@@ -225,10 +226,18 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     const { w, h, horizontal, vertical } = resizeTo(g, x, y, snap8);
     g.el.style.cssText = g.prevStyle;
     setResizing(null);
-    const patch: Record<string, unknown> = {};
-    if (horizontal) patch.width = w;
-    if (vertical) patch.height = h;
-    useDocumentStore.getState().dispatch((c) => patchNode(c, { pageIndex: pageIndex(), path: g.path }, patch));
+    // Write to the active breakpoint, like every panel edit (responsive.tablet / .phone off desktop).
+    const bp = useUIStore.getState().breakpoint;
+    const resize = (n: Node) => {
+      let out = n;
+      if (horizontal) out = setStyle(out, bp, 'width', w);
+      if (vertical) out = setStyle(out, bp, 'height', h);
+      return out;
+    };
+    useDocumentStore.getState().dispatch((c) => ({
+      ...c,
+      pages: c.pages.map((p, i) => (i === pageIndex() ? { ...p, sections: updateAt(p.sections, g.path, resize) } : p)),
+    }));
     notifyLayout();
   }, [resizeTo]);
 
