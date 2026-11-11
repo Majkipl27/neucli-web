@@ -66,8 +66,11 @@ interface UIState {
   /** Canvas zoom factor; 1 = 100%. */
   zoom: number;
 
-  /** Breakpoint the canvas shows and panel edits write to. */
+  /** Breakpoint of the frame being edited; panel edits write to it. */
   breakpoint: Breakpoint;
+  /** Board: every page at every breakpoint (true), or only the active breakpoint. */
+  boardAllBreakpoints: boolean;
+  setBoardAllBreakpoints: (all: boolean) => void;
   /** In-app confirm dialog (native dialogs can't be answered in every host). */
   confirm: ConfirmRequest | null;
   /** The Create component dialog is open. */
@@ -144,6 +147,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   editRequest: 0,
   zoom: 1,
   breakpoint: 'desktop',
+  boardAllBreakpoints: true,
   confirm: null,
   createComponentOpen: false,
   setCreateComponentOpen: (createComponentOpen) => set({ createComponentOpen }),
@@ -185,7 +189,9 @@ export const useUIStore = create<UIState>((set, get) => ({
     }, 2600);
   },
 
-  setBreakpoint: (breakpoint) => set((s) => (s.breakpoint === breakpoint ? s : { breakpoint, fitRequest: s.fitRequest + 1 })),
+  // The board keeps every frame on screen where it is; the canvas scrolls to the frame instead of refitting.
+  setBreakpoint: (breakpoint) => set((s) => (s.breakpoint === breakpoint ? s : { breakpoint })),
+  setBoardAllBreakpoints: (boardAllBreakpoints) => set({ boardAllBreakpoints }),
   askConfirm: (confirm) => set({ confirm }),
   closeConfirm: () => set({ confirm: null }),
 

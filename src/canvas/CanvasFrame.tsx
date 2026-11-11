@@ -30,10 +30,13 @@ function setCanvasCss(doc: Document, css: string) {
   const style = doc.getElementById('nc-tw');
   if (!style || style.textContent === css) return;
   const root = doc.documentElement;
+  const first = !style.textContent;
   root.setAttribute('data-nc-instant', '');
   style.textContent = css;
   void doc.body.offsetHeight;
   root.removeAttribute('data-nc-instant');
+  // Dev: when each frame first gets styled, for measuring board load time.
+  if (import.meta.env.DEV && first) performance.mark('nc-frame-styled');
 }
 
 export interface CanvasFrameProps {
@@ -219,6 +222,8 @@ function CanvasFrame(props: CanvasFrameProps) {
     doc.documentElement.addEventListener('mouseleave', onLeave);
     win.addEventListener('wheel', onWheel, { passive: false });
     win.addEventListener('keydown', onKey);
+    // Keyup too: holding Space pans the board, and the editor has to see it released.
+    win.addEventListener('keyup', onKey);
     return () => {
       doc.removeEventListener('mousedown', onDown, true);
       doc.removeEventListener('click', onClick, true);
@@ -231,6 +236,7 @@ function CanvasFrame(props: CanvasFrameProps) {
       doc.documentElement.removeEventListener('mouseleave', onLeave);
       win.removeEventListener('wheel', onWheel);
       win.removeEventListener('keydown', onKey);
+      win.removeEventListener('keyup', onKey);
     };
   }, [doc, live]);
 

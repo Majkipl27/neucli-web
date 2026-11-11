@@ -58,9 +58,29 @@ export interface Interactions {
   resizing: { w: number; h: number } | null;
   /** A move drag is in progress (the canvas shows drop targets for empty named slots). */
   moving: boolean;
+  /**
+   * Point the hook at another frame's document right away, before React re-renders:
+   * a mouse-down in an inactive board frame activates it and starts the gesture.
+   */
+  switchDocument: (doc: Document | null) => void;
 }
 
-export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefObject<HTMLDivElement | null>): Interactions {
+/** Where the active frame's top-left is on screen (editor client px). */
+export interface FrameAnchor {
+  current: { getBoundingClientRect(): { left: number; top: number } } | null;
+}
+
+export function useCanvasInteractions(doc: Document | null, sizerRef: FrameAnchor): Interactions {
+  // Callbacks read the document through a ref so a frame switch takes effect mid-event.
+  const docRef = useRef(doc);
+  const lastDocProp = useRef(doc);
+  if (lastDocProp.current !== doc) {
+    lastDocProp.current = doc;
+    docRef.current = doc;
+  }
+  const switchDocument = useCallback((d: Document | null) => {
+    docRef.current = d;
+  }, []);
   const gesture = useRef<Gesture | null>(null);
   liveGesture = gesture;
   const edit = useRef<EditState | null>(null);
@@ -165,6 +185,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
   // --- dropping --------------------------------------------------------------------
 
   const computeDrop = useCallback((g: Extract<Gesture, { kind: 'move' }>, x: number, y: number) => {
+    const doc = docRef.current;
     if (!doc) return;
     const config = rawConfig();
     const idx = pageIndex();
@@ -190,7 +211,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     }
     setDrop(res.drop);
     setDropInvalid(dropCache.current.invalid);
-  }, [doc]);
+  }, []);
 
   const endMove = useCallback((commit: boolean) => {
     const g = gesture.current;
@@ -253,18 +274,20 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     event.preventDefault();
     event.stopPropagation();
     const sel = useSelectionStore.getState().selection;
+    const doc = docRef.current;
     if (!doc || !sel) return;
     const el = elementFor(doc, sel.path) as HTMLElement | null;
     const start = rectOf(el);
     if (!el || !start) return;
     const p = toPage(event.clientX, event.clientY);
     gesture.current = { kind: 'resize', handle, path: sel.path, el, start, x: p.x, y: p.y, prevStyle: el.style.cssText };
-  }, [doc, toPage]);
+  }, [toPage]);
 
   // --- pointer -----------------------------------------------------------------------
 
   const handleMove = useCallback((x: number, y: number, shift: boolean, mod: boolean) => {
     const g = gesture.current;
+    const doc = docRef.current;
     if (!doc) return;
     if (!g) {
       if (edit.current) return;
@@ -293,7 +316,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
       return;
     }
     resizeTo(g, x, y, shift);
-  }, [doc, computeDrop, resizeTo]);
+  }, [computeDrop, resizeTo]);
 
   const handleUp = useCallback((x: number, y: number, shift: boolean) => {
     const g = gesture.current;
@@ -312,6 +335,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
   }, [endMove, endResize]);
 
   const onPointer = useCallback((p: CanvasPointer) => {
+    const doc = docRef.current;
     if (!doc) return;
     if (p.type === 'move') return handleMove(p.x, p.y, p.shift, p.mod);
     if (p.type === 'up') return handleUp(p.x, p.y, p.shift);
@@ -364,7 +388,7 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
         if (target) startEdit(target);
       }
     }
-  }, [doc, handleMove, handleUp, finishEdit, startEdit]);
+  }, [handleMove, handleUp, finishEdit, startEdit]);
 
   // Drags and resizes keep going when the pointer leaves the page for the editor around it.
   useEffect(() => {
@@ -401,5 +425,5 @@ export function useCanvasInteractions(doc: Document | null, sizerRef: React.RefO
     };
   }, [toPage, handleMove, handleUp, endMove]);
 
-  return { onPointer, onHandleDown, drop, dropInvalid, editing, renderKey, resizing, moving };
+  return { onPointer, onHandleDown, drop, dropInvalid, editing, renderKey, resizing, moving, switchDocument };
 }
